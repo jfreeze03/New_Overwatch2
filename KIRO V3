@@ -1,0 +1,111 @@
+New file detected: utils/dba_tool_catalog.py. Let me read the changed files.
+I now have a complete picture. Let me compile the final comprehensive evaluation.
+________________________________________
+OVERWATCH_CODEX — Full Re-Evaluation (Third Pass)
+Change Delta Since Last Review
+Change	Status
+execute_as: OWNER in snowflake.yml	⚠️ STILL NOT FIXED — comments say CALLER, code says OWNER
+query_warehouse: COMPUTE_WH	⚠️ STILL NOT FIXED — OVERWATCH_WH exists in mart SQL but isn't referenced
+dba_tool_catalog.py added	✅ NEW — extracted static DBA tool metadata from dba_tools.py
+dba_tools.py restructured	✅ IMPROVED — now imports from catalog, has warehouse settings manager, QAS monitor, task graph control, Cortex AI limits
+query_workbench.py exists as a legacy router	Unchanged — routes to live/diagnosis/patterns/search
+adoption_analytics.py — mart-backed adoption analysis	Solid — trend, warehouse/database adoption, role mix
+platform_topology.py — relationship maps	Solid — warehouse→user, database→schema, roles, app flows, report pack
+SPCS Tracker	❌ NO CHANGE — still button-gated, still thin
+Data Sharing	❌ NO CHANGE — still button-gated, still minimal
+Security Posture	❌ NO CHANGE — still only 2 workflows
+Workload Operations	❌ NO CHANGE — still a pure router with no aggregate KPI
+exceptions_only_mode in cache key	❌ NOT FIXED — likely still busting cache on toggle
+________________________________________
+Updated Section Grades
+#	Section	Score	Grade	Δ	Recommendation
+1	utils/query.py	94	A	—	Mature. Only remaining issue: exceptions_only_mode in _cache_context(). Remove it.
+2	utils/cache.py	92	A-	—	Salt-based invalidation is correct. Consider adding per-section salt scoping.
+3	Architecture Readiness	91	A-	—	Strongest governance section. Add auto-discovery from SHOW WAREHOUSES/DATABASES to flag unregistered objects.
+4	utils/session.py	91	A-	—	Clean. No further changes needed.
+5	utils/admin.py	90	A-	—	Solid. Cache the execution context per session to avoid SELECT CURRENT_USER per audit write.
+6	Recommendations & Action Queue	89	B+	—	Add ROI prioritization (savings × confidence / effort) and age-based escalation.
+7	DBA Tools	84	B	+8	Significant improvement with catalog extraction, warehouse settings manager, task graph control, and Cortex limits. Still needs splitting into distinct sub-modules for clarity.
+8	Live Monitor	88	B+	—	Add WAREHOUSE_NAME=> parameter to table function when filter is active. Gate fragment on active tab.
+9	Account Health	88	B+	—	Add a single 0-100 health score at the very top of Overview.
+10	Warehouse Health	88	B+	—	Add warehouse comparison mode and right-sizing confidence.
+11	Cost & Contract	88	B+	—	Has cost control score. Add contract burn-down chart at router level.
+12	DBA Control Room	86	B+	—	Shell pattern remains strong. Consider progressive board loading.
+13	Task Management	87	B+	—	Task graph control added in DBA Tools. Add DAG visualization.
+14	Cost Center	86	B+	—	10 sub-views is too deep. Consolidate to 7 (merge Burn+Forecast, merge Attribution+Chargeback).
+15	Budget Governance	85	B+	—	Summit-aligned. Add auto-load and Resource Monitor integration.
+16	Query Analysis	85	B+	—	Mart-backed bottlenecks. Add week-over-week degradation delta.
+17	Change & Drift	86	B+	—	Object change monitor is solid. Add drift timeline visualization.
+18	Alert Center	84	B	—	Consolidate to 6 panes (merge Control Health+Issue Inbox; merge Rules+Suppression).
+19	Cortex Monitor	84	B	—	Add per-model breakdown and Cortex Agent tracking.
+20	Stored Procedure Tracker	84	B	—	Add release-window comparison and procedure→query lineage graph.
+21	Platform Topology (NEW eval)	83	B	NEW	5 panes covering user→warehouse, database→schema, roles, app flows, report pack. Good relationship mapping. Needs visualization beyond tables.
+22	app.py	83	B	—	Extract sidebar into separate module. Replace inline HTML where possible.
+23	Object Change Monitor	83	B	—	Move CASE WHEN classification into mart refresh. Add timeline viz.
+24	Adoption Analytics (NEW eval)	83	B	NEW	Mart-backed with live fallback. 4 panes: trend, warehouse adoption, database adoption, role mix. Solid for security/governance context.
+25	Security Posture	82	B	—	Only 2 workflows. Add "Privilege Sprawl", "Network & Session Policies".
+26	Snowflake Value	82	B	—	Add auto-load, monthly value trend chart, auto-detection from action queue closures.
+27	Detailed Diagnosis	82	B	—	CONSOLIDATE INTO Query Analysis (see recommendation below).
+28	Service Health	81	B-	—	Add single aggregate health score and SLA tracking.
+29	Pipeline Health	81	B-	—	Add Snowpipe and Dynamic Table monitoring.
+30	Query Workbench (legacy router)	78	C+	—	REMOVE — superseded by Workload Operations routing.
+31	Usage Overview	80	B-	—	Add period-over-period comparison.
+32	Workload Operations	80	B-	—	Add 3-metric summary row at top (running, failed, SLA breaches).
+33	Query Search	79	C+	—	Add SEARCH OPTIMIZATION awareness; respect global date range.
+34	Storage Monitor	78	C+	—	Add auto-load; add Iceberg table tracking.
+35	config.py	78	C+	—	Move ARCHITECTURE_OBJECTIVES and FORWARD_PLATFORM_CONTROLS to YAML.
+36	SPCS Tracker	72	C	—	MERGE into Cost & Contract as a tab or add service-level depth.
+37	Data Sharing	70	C-	—	MERGE into Security Posture as a workflow or add outbound share monitoring.
+________________________________________
+Consolidation Recommendations
+REMOVE (3 items)
+Target	Reason	Action
+query_workbench.py	Legacy router superseded by workload_operations.py. All its workflows already exist in the Workload Operations router.	Delete file. Update any remaining redirect in SECTION_REDIRECTS.
+usage_overview.py as standalone section	Duplicates DBA Control Room overview purpose. Routes via redirect only.	Keep as sub-module of DBA Control Room only. Remove from section dispatch if it's there.
+service_health.py as standalone section	Overlaps with DBA Control Room health boards and Account Health overview.	Merge into DBA Control Room as a workspace board.
+MERGE (4 items)
+Source	Into	Reason
+detailed_diagnosis.py	query_analysis.py	Same persona, overlapping metrics (slow/spill/blocked). Make diagnosis modes a tab inside Query Analysis.
+spcs_tracker.py	cost_contract.py (as a workflow sub-module)	Too thin to be standalone. Already routed from Cost & Contract. Add service-level and lifecycle depth.
+data_sharing.py	security_posture.py (already routed there)	Already in Security Posture as a workflow. But the implementation needs outbound share monitoring, consumer access, and classification correlation to justify its existence.
+platform_topology.py + adoption_analytics.py	Create a unified "Account Intelligence" section	Both analyze account-wide usage patterns from different angles. Combining gives one place for "who uses what, how, and why."
+ADD (5 capabilities)
+Feature	Where	Why
+Aggregate health score at router top	Workload Operations, Security Posture	Executives need one number before drilling. 3-metric row: running queries / failures last hour / SLA breaches.
+Contract burn-down chart	Cost & Contract router level	Single most important FinOps visual. Spend vs commitment, projected overshoot date, confidence band.
+Dynamic Table + Snowpipe monitoring	Pipeline Health	Major gap. Dynamic tables are increasingly used; no visibility into lag or refresh failures.
+Privilege graph / RBAC visualization	Security Posture	Text tables don't communicate grant sprawl. Even a simplified role→object mapping would add immense value.
+Auto-load pattern for thin sections	SPCS, Data Sharing, Storage Monitor, Snowflake Value	Button-gated loading makes sections feel broken on first render. Use session-state check + auto-load on render.
+________________________________________
+The snowflake.yml Problem (Still P0)
+# The comments say CALLER:
+# execute_as: CALLER (SiS default — intentionally not set to OWNER)
+
+# But the actual configuration says:
+execute_as: OWNER
+This is a contradiction that must be resolved. Either:
+•	Change to execute_as: CALLER and ensure all roles have proper grants (documented in the comments), or
+•	Keep OWNER but remove the misleading comments and add a dedicated limited role
+Additionally, query_warehouse: COMPUTE_WH should be query_warehouse: OVERWATCH_WH since the mart setup creates that warehouse specifically for OVERWATCH isolation.
+Fix:
+query_warehouse: OVERWATCH_WH
+execute_as: CALLER
+________________________________________
+Overall Platform Scores
+Category	Last Review	Current	Delta	Notes
+Engineering Quality	87	87	0	Stable — DBA tool catalog is clean extraction
+Cost Safety	84	84	0	No new cost risks introduced; existing ones not resolved
+Production Readiness	82	82	0	snowflake.yml contradictions block sign-off
+Architecture	89	90	+1	DBA tool catalog improves modularity
+Executive Usefulness	82	83	+1	Platform topology and adoption analytics add intelligence
+Innovation	83	84	+1	Summit-aligned budget governance, agentic AI controls
+Composite: 85 → 85/100 (no net movement — improvements balanced by unresolved P0s)
+________________________________________
+If You Have 8 Hours — What Produces the Most Impact
+1.	Fix snowflake.yml — change to CALLER + OVERWATCH_WH. 15 minutes. Eliminates P0 blockers.
+2.	Add auto-load to SPCS, Data Sharing, Storage Monitor, Snowflake Value — Replace button-gated loading with session-state cached auto-load on render. 2 hours. Immediately makes 4 sections feel production-ready instead of broken.
+3.	Merge Detailed Diagnosis into Query Analysis — Move the 6 diagnosis modes as a sub-radio inside Query Analysis. Delete the standalone module. 1 hour. Eliminates confusion about where to go for query problems.
+4.	Delete query_workbench.py — It's a legacy router with no unique value. Verify all its redirects exist in SECTION_REDIRECTS. 30 minutes.
+5.	Add 3-metric summary to Workload Operations and Security Posture routers — One run_query() call with live tier cache for running/failed/blocked counts. 2 hours. Transforms routers from empty launchers into informative starting points.
+6.	Remove exceptions_only_mode from _cache_context() — Apply it as a client-side DataFrame filter in sections that use it. 1 hour. Eliminates the most common unnecessary cache invalidation.
+
