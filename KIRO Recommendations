@@ -1,0 +1,196 @@
+________________________________________
+OVERWATCH_CODEX — Production Cost & Performance Audit
+A. Executive Summary
+Overall Risk Rating: MEDIUM
+This is a well-engineered Streamlit-in-Snowflake monitoring app with many production-grade controls already in place. However, several patterns create hidden cost and performance exposure that must be addressed before sustained multi-user deployment.
+Top 10 Issues Ranked by Business Impact
+#	Issue	Impact
+1	Shared warehouse (COMPUTE_WH) for app + business workloads	Cost attribution impossible; app queries compete with production work
+2	INFORMATION_SCHEMA.QUERY_HISTORY() table function in Live Monitor scans up to 500 rows per fragment refresh every 15-30s	Potentially 120+ queries/hour per concurrent user
+3	st.cache_data.clear() on global Refresh nukes ALL cached data for ALL users in the same SiS deployment	One user's refresh forces re-query for every concurrent session
+4	No per-user session isolation in st.cache_data — cache keys include filter state but not user identity	Users with same filters share cache correctly, but cache invalidation is global
+5	_cache_context() includes 10 session state fields as cache key — any change to any filter forces a complete cache miss	Over-granular cache keys cause unnecessary Snowflake queries
+6	SQL string concatenation for filters (e.g., wh_clause, st_clause) rather than parameterized bindings	SQL injection partially mitigated by safe_sql() but f-string SQL still risks edge cases
+7	No query result row LIMIT in most ACCOUNT_USAGE queries — only post-hoc _apply_result_guard() truncation	Full scan completes before the guard discards rows; credits already burned
+8	Admin audit writes (log_admin_action) run on same warehouse — no isolation between observability writes and reads	Under load, audit INSERTs compete with dashboard reads
+9	EXECUTE AS OWNER in snowflake.yml means the app runs with the deploying role's full privilege set	Over-permissioned by default; any code path has owner-role access to all granted objects
+10	No connection pool or session reuse strategy across concurrent users in SiS	Each Streamlit user gets its own get_session() call chain; no session sharing or warm pool
+Estimated Surprise-Cost Risk Areas
+•	Live Monitor auto-refresh: 2-8 credits/day per active user (depending on XS vs S warehouse)
+•	Global Refresh cache nuke on multi-user deployment: 5-20% wasted re-query credits
+•	Unbounded date range queries (despite 35-day clamp): some SQL has hardcoded DATEADD('day', -N, ...) that ignores global filters
+•	ALTER SESSION SET QUERY_TAG executes on every query when detailed tags enabled: 1 extra DDL roundtrip per query
+________________________________________
+B. Findings Table
+File/Area	Problem	Why It Matters	Cost	Perf	Security	Fix	Priority
+utils/session.py:68-75	3 ALTER SESSION SET statements run sequentially on every new session creation	Each is a synchronous roundtrip; adds 300-900ms to cold start	Low	Med	Low	Batch into single ALTER SESSION SET QUERY_TAG='OVERWATCH', STATEMENT_TIMEOUT_IN_SECONDS=840, TIMEZONE='UTC'	P2
+utils/session.py:87-94	_session_is_alive() runs SELECT 1 every 55 minutes	Under high concurrency, hundreds of keepalive pings	Low	Low	Low	Acceptable but could use session._conn.is_closed() check first	P3
+utils/query.py:_cache_context()	10-field cache key including exceptions_only_mode	Toggling exceptions mode busts entire cache for all tiers	Med	High	Low	Move exceptions_only_mode out of cache key; let sections filter client-side	P1
+utils/query.py:_cached_live	30s TTL but INFORMATION_SCHEMA.QUERY_HISTORY() already has 0 latency	Cache adds complexity but 30s is fine; however the function is called even when user isn't on Live Monitor tab	Low	Med	Low	Ensure fragment only runs when Active Queries tab is selected	P2
+utils/cache.py:clear_all_cache()	st.cache_data.clear() is a global clear in SiS shared deployments	Destroys cache for ALL concurrent users	High	High	Low	Use force_refresh(key) per-section salt bumps instead of global clear	P0
+sections/live_monitor.py:~100-112	INFORMATION_SCHEMA.QUERY_HISTORY(RESULT_LIMIT=>500) with no warehouse_name predicate pushdown	Table function scans all recent queries then filters client-side	Med	High	Low	Add WAREHOUSE_NAME=> parameter to the table function call when filter is set	P1
+sections/cost_contract.py:_build_cost_cockpit_sql	Full WAREHOUSE_METERING_HISTORY scan twice (current + prior period) with only start_time predicate	On large accounts this scans millions of metering rows	Med	Med	Low	Create a materialized view or dynamic table for daily aggregation	P2
+config.py:ARCHITECTURE_OBJECTIVES	14 large dict literals hardcoded in config	Increases module load time; should be in a YAML/JSON file or Snowflake table	Low	Low	Low	Move to external file loaded once at startup	P3
+snowflake.yml	execute_as: OWNER	App runs with deployer's role; blast radius of any bug = full role access	Low	Low	High	Change to execute_as: CALLER or create a dedicated limited role	P0
+snowflake.yml	query_warehouse: COMPUTE_WH shared with other workloads	Cost attribution impossible; app can't auto-suspend independently	High	Med	Low	Create OVERWATCH_WH (XS, auto_suspend=60)	P0
+utils/query.py:safe_sql()	2000-char hard cap is good, but safe_identifier() allows $ in identifiers	Snowflake allows $ but it's unusual; could mask typo-based injection attempts	Low	Low	Med	Consider restricting to [A-Za-z_][A-Za-z0-9_]{0,254} without $	P3
+app.py:_render_app_header()	Uses unsafe_allow_html=True with html.escape()	Currently safe because all values are escaped, but fragile pattern	Low	Low	Med	Audit all unsafe_allow_html=True paths to ensure no unescaped user input ever reaches them	P2
+app.py	time.perf_counter() section timing has no max timeout	If a section hangs, the app thread blocks indefinitely until the 840s statement timeout	Low	High	Low	Add a Python-side timeout wrapper around sections.dispatch()	P2
+Multiple sections	Queries use DATEADD('day', -N, CURRENT_TIMESTAMP()) ignoring global_start_date/global_end_date	Users set filters expecting bounded scans, but underlying SQL ignores them	Med	Med	Low	Inject global date predicates into all section SQL builders	P1
+utils/query.py:_apply_result_guard()	Guard runs AFTER to_pandas() completes	Full result already materialized in memory; Snowflake credits already spent	Med	Med	Low	Add LIMIT to SQL at generation time; use guard as second safety net	P1
+________________________________________
+C. Code-Level Fixes
+P0: Dedicated Warehouse
+# snowflake.yml — change query_warehouse
+query_warehouse: OVERWATCH_WH
+Create in Snowflake:
+CREATE WAREHOUSE IF NOT EXISTS OVERWATCH_WH
+  WAREHOUSE_SIZE = 'X-SMALL'
+  AUTO_SUSPEND = 60
+  AUTO_RESUME = TRUE
+  INITIALLY_SUSPENDED = TRUE
+  COMMENT = 'Dedicated warehouse for OVERWATCH Streamlit app — isolated cost attribution';
+P0: Change execute_as
+execute_as: CALLER
+Or create a dedicated role:
+CREATE ROLE OVERWATCH_APP_ROLE;
+GRANT USAGE ON DATABASE DBA_MAINT_DB TO ROLE OVERWATCH_APP_ROLE;
+GRANT USAGE ON SCHEMA DBA_MAINT_DB.OVERWATCH TO ROLE OVERWATCH_APP_ROLE;
+GRANT IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE TO ROLE OVERWATCH_APP_ROLE;
+-- Grant SELECT on specific ACCOUNT_USAGE views rather than blanket IMPORTED PRIVILEGES
+P0: Replace global cache clear
+# utils/cache.py — replace st.cache_data.clear() with targeted invalidation
+def clear_all_cache(
+    *,
+    clear_streamlit_cache: bool = True,
+    clear_metadata: bool = True,
+):
+    # ... existing session state cleanup ...
+    
+    if clear_streamlit_cache:
+        # Instead of global clear, bump a salt that all cache functions reference
+        import uuid
+        st.session_state["_refresh_salt_global"] = uuid.uuid4().hex[:8]
+        # Do NOT call st.cache_data.clear() — this is global in SiS
+P1: Add LIMIT to SQL at generation time
+# utils/query.py — add a helper
+def _inject_limit(query_text: str, max_rows: int = 5000) -> str:
+    """Add LIMIT to queries that don't already have one."""
+    upper = query_text.strip().rstrip(';').upper()
+    if 'LIMIT' in upper.split('ORDER BY')[-1] if 'ORDER BY' in upper else upper:
+        return query_text
+    return f"{query_text.rstrip().rstrip(';')}\nLIMIT {max_rows}"
+P1: Remove exceptions_only_mode from cache context
+# utils/query.py:_cache_context() — remove this line:
+#   str(st.session_state.get("exceptions_only_mode", "")),
+# Instead, let sections apply exceptions-only filtering after query results are returned.
+________________________________________
+D. Snowflake SQL Optimization
+Query Pattern	Verdict	Recommendation
+WAREHOUSE_METERING_HISTORY with start_time filter	Safe — well-bounded	Add global date integration; consider daily materialized view
+INFORMATION_SCHEMA.QUERY_HISTORY(RESULT_LIMIT=>500)	Risky at auto-refresh intervals	Add WAREHOUSE_NAME=> parameter; reduce RESULT_LIMIT to 100 for triage
+ACCOUNT_USAGE.QUERY_HISTORY with company warehouse filter	Expensive — 45-min latency view scans entire history partition range	Always include start_time >= DATEADD(...) AND apply LIMIT; consider a task-refreshed summary table
+SELECT CURRENT_ROLE() / SELECT 1 keepalives	Safe — trivial metadata queries	No action needed
+ALTER SESSION SET QUERY_TAG per query (detailed mode)	Risky — DDL roundtrip per query	Batch or skip when tag hasn't changed (already handled — good)
+Task/Procedure history queries	Watch — no visible row limits in section builders	Inject LIMIT 2000 and paginate
+SHOW WAREHOUSES, SHOW TASKS	Safe — metadata tier with 4h cache	Good
+Query tag recommendation: Already implemented — OVERWATCH base tag with optional detailed tags. Add OVERWATCH_WH warehouse-level cost separation for cleaner FinOps attribution.
+________________________________________
+E. Streamlit Caching Plan
+Function/Pattern	Cache Type	TTL	Notes
+_cached_live	st.cache_data	30s	Correct for IS queries
+_cached_recent	st.cache_data	300s	Correct for AU recent
+_cached_historical	st.cache_data	1800s	Correct
+_cached_metadata	st.cache_data	14400s	Correct — SHOW results
+Snowflake session object	Session state (NOT st.cache_resource)	55-min TTL check	Correct — sessions can't be pickled
+filter_existing_columns metadata probes	Should use metadata tier	14400s	Currently appears to run per-section; consolidate
+Theme CSS injection	Not cached, re-rendered every rerun	N/A	Should use st.cache_resource for the CSS string
+ARCHITECTURE_OBJECTIVES / FORWARD_PLATFORM_CONTROLS	Module-level constants	∞	Move to file; load once with st.cache_resource
+What should NOT be cached:
+•	Admin action results (mutations)
+•	Session state reads
+•	User-specific bookmark lists (changes frequently)
+•	Live Monitor fragment data when auto-refresh is on (use the 30s tier correctly)
+Session state recommendations:
+•	Current usage is solid — filter state, navigation, telemetry all in session_state
+•	Add st.session_state["_overwatch_user_identity"] for multi-user cache isolation
+•	Remove exceptions_only_mode from cache key; apply it as a post-query DataFrame filter
+________________________________________
+F. Cost Guardrails
+Control	Current State	Recommendation
+Dedicated warehouse	❌ Uses shared COMPUTE_WH	Create OVERWATCH_WH XS, auto_suspend=60s
+Warehouse size	Unknown (shared)	XS for dashboard; S only if >5 concurrent users
+Auto-suspend	Unknown	60 seconds — dashboard is bursty
+Query timeout	✅ 840s (session-level)	Good — also add warehouse-level STATEMENT_TIMEOUT_IN_SECONDS = 600
+Max row limits	✅ 5000 standard / 25000 admin (post-query)	Move to SQL-level LIMIT (pre-query)
+Date range limits	✅ 35 days standard / 90 days admin	Good — enforce in SQL builders, not just UI
+Admin-only pages	✅ Admin toggle with role defaults	Good
+Query tagging	✅ OVERWATCH base + optional section detail	Add warehouse-level tag for billing
+Usage monitoring	✅ In-session telemetry board	Add a scheduled task to write daily usage summary to a monitoring table
+Resource monitor	❌ Not configured	Create OVERWATCH_RESOURCE_MONITOR with 5-credit daily ceiling for the app warehouse
+________________________________________
+G. Test Plan
+Unit Tests
+•	safe_sql() — injection attempts, Unicode, oversized input, edge cases
+•	safe_identifier() — valid/invalid identifiers, qualified names, $ handling
+•	clamp_global_date_range() — boundary cases, admin vs standard
+•	_cache_context() — signature stability across reruns
+•	_apply_result_guard() — empty DF, oversized DF, metadata probe bypass
+•	credits_to_dollars() — zero, negative, Decimal, None inputs
+•	normalize_section_name() — aliases, redirects, unknown sections
+Performance Tests
+•	Cold start time (first render with empty cache): target <4s
+•	Section switch time: target <2s
+•	Live Monitor fragment refresh overhead: target <500ms
+•	Full cache clear + re-render time: measure credits consumed
+•	10 concurrent users: measure cache hit ratio and warehouse queueing
+Multi-User Simulation
+•	5 users on different sections simultaneously
+•	2 users toggling exceptions mode while others browse
+•	1 user doing global refresh while 4 others have active sessions
+•	Verify st.cache_data.clear() blast radius
+Snowflake Credit-Cost Tests
+•	Measure credits per full session (all sections visited once): target <0.5 credits
+•	Measure credits for 1-hour DBA session with auto-refresh: target <2 credits
+•	Measure credits after global filter change (cache invalidation): document delta
+Regression Tests
+•	Section navigation with legacy bookmarks (redirect map)
+•	Role-based visibility for ANALYST, MANAGER, DBA
+•	Filter signature change detection accuracy
+•	Admin audit trail completeness
+Failure-Mode Tests
+•	Snowflake connection drops mid-session
+•	ACCOUNT_USAGE view not accessible (permission revoked)
+•	Warehouse suspended during query execution
+•	Result guard triggers on massive result set
+•	Statement timeout fires (>840s query)
+________________________________________
+H. Final Sign-Off Checklist
+Reviewer	Check	Status
+DBA	Dedicated warehouse created and sized	⬜
+DBA	Resource monitor attached with daily ceiling	⬜
+DBA	Statement timeout set at warehouse AND session level	⬜
+DBA	Query tag verified in QUERY_HISTORY for cost attribution	⬜
+Snowflake Architect	execute_as: CALLER or dedicated least-privilege role	⬜
+Snowflake Architect	No SELECT * patterns; all queries have date predicates	⬜
+Snowflake Architect	Live Monitor INFORMATION_SCHEMA call frequency bounded	⬜
+FinOps	Credit budget allocated for OVERWATCH operations	⬜
+FinOps	Daily usage monitoring task scheduled	⬜
+FinOps	Surprise-cost alerts configured (resource monitor + email)	⬜
+Security	EXECUTE AS OWNER removed or replaced with scoped role	⬜
+Security	All unsafe_allow_html=True paths audited for XSS	⬜
+Security	safe_sql(), safe_identifier(), sql_literal() cover all user inputs	⬜
+Security	No secrets/passwords in session state or logs	⬜
+Security	Admin action audit trail verified end-to-end	⬜
+App Owner	Global cache clear replaced with targeted salt invalidation	⬜
+App Owner	All section SQL builders respect global date range	⬜
+App Owner	SQL-level LIMIT injected before to_pandas()	⬜
+App Owner	Multi-user cache isolation tested	⬜
+App Owner	Error handling verified for all Snowflake failure modes	⬜
+App Owner	Rollback plan documented (redeploy prior version)	⬜
+________________________________________
+Summary
+The app is architecturally solid — the tiered caching, query telemetry, result guards, admin gating, role-based navigation, and section-level cost attribution are all above-average engineering. The three most urgent fixes are: (1) dedicated warehouse for cost isolation, (2) replacing st.cache_data.clear() with per-section salt invalidation, and (3) changing execute_as: OWNER to a least-privilege pattern. Everything else is medium-priority hardening that reduces hidden credit burn under multi-user load.
+
+________________________________________
+
