@@ -1,0 +1,118 @@
+
+# OVERWATCH V3 — Fresh Pull Update
+
+## What Was Fixed ✅
+
+**✅ `utils/__init__.py` — all 3 missing mart exports added.** `build_mart_cost_explorer_sql`, `build_mart_usage_storage_sql`, and `build_mart_warehouse_heatmap_sql` are now in the `"mart"` export group. `mart_source_caption`, `make_action_id`, `upsert_actions`, `action_queue_environment_clause`, and `action_queue_environment_values` also confirmed exported.
+
+**✅ `sections/dba_control_room.py` — `company` now reads `get_active_company()`.** `render()` now opens with `company = get_active_company()` — consistent with every other section.
+
+**✅ `load_task_inventory` — `force_refresh=True` removed.** Both calls at lines 879 and 1296 no longer pass `force_refresh`. Release compare no longer fires a forced `SHOW TASKS IN ACCOUNT` on every run.
+
+**✅ `snowflake.yml` — major improvement.** Stage path corrected to `DBA_MAINT_DB.OVERWATCH.OVERWATCH_STAGE`, artifacts use directory entries (`utils/`, `sections/`) cleanly, and there's now a detailed inline comment explaining CALLER mode, privilege requirements, and the most common misconfiguration (missing `IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE`). This is genuinely useful for anyone onboarding to the app.
+
+**✅ `mart_source_caption()` added to `utils/mart.py`** and exported — clean helper that sections now use for consistent mart/fallback source labeling.
+
+**✅ `FACT_WAREHOUSE_OPERABILITY_DAILY`** — `warehouse_health.py` now has a mart-backed operability fact surface with pre-aggregated blocker rows, capacity scores, approval/rollback/savings verification flags, and next control actions. This is a significant upgrade to the section.
+
+---
+
+## Remaining Issues
+
+### 🔴 High
+
+**1. App Performance pane still reads local filesystem in SiS — unchanged**
+
+`_latest_local_perf_result()` and `_latest_local_snowflake_suite_result()` both still do:
+```python
+root = Path(__file__).resolve().parents[2]
+results_dir = root / "perf_tests" / "results"
+if not results_dir.exists():
+    return {}
+```
+
+In SiS, `results_dir` will never exist. The pane renders but shows all zeros and "Not run locally" for every test gate. This is the only remaining high-priority issue. The fix remains a one-line guard:
+
+```python
+elif active_view == "App Performance":
+    if not st.session_state.get("_overwatch_is_sis", True):
+        _render_app_performance_guardrail()
+    else:
+        st.info("App Performance metrics are available when running locally. Session query budget and render time are shown above.")
+```
+
+Or simply remove the pane from `DBA_CONTROL_ROOM_PANES` for the SiS build and keep it as a local dev tool.
+
+---
+
+### 🟡 Medium
+
+**2. `sections/dba_control_room.py` — Triage view `priority_columns` references `SEVERITY`, `DOMAIN`, `ENTITY`, `DETAIL`, `NEXT_WORKFLOW`, `NEXT_ACTION` — but `_severity_rows()` returns `Severity`, `Signal`, `Evidence`, `Action`, `Route`, `Workflow` (mixed case, different names)**
+
+```python
+# In the Triage active_view block:
+render_priority_dataframe(
+    exceptions,
+    priority_columns=[
+        "SEVERITY", "DOMAIN", "SIGNAL", "ENTITY", "DETAIL",
+        "NEXT_WORKFLOW", "NEXT_ACTION",
+    ],
+```
+
+But `_severity_rows()` builds a DataFrame with columns `Severity`, `Signal`, `Evidence`, `Action`, `Route`, `Workflow` (title case). The `render_priority_dataframe` function filters to only show `priority_columns` that exist — so `SEVERITY`, `DOMAIN`, `ENTITY`, `DETAIL`, `NEXT_WORKFLOW`, `NEXT_ACTION` all silently produce empty columns. Only `SIGNAL` matches nothing either. The Triage view will render an effectively empty table even when exceptions exist.
+
+**Fix:** Align the `priority_columns` list with the actual column names from `_severity_rows()`:
+```python
+priority_columns=["Severity", "Signal", "Evidence", "Action", "Route", "Workflow"],
+```
+
+---
+
+**3. `sections/warehouse_health.py` imports `build_mart_warehouse_heatmap_sql` but also calls `action_queue_environment_clause` and `action_queue_environment_values` — both are now exported, but `make_action_id` and `upsert_actions` must also be confirmed in the import list**
+
+```python
+from utils import (
+    ...
+    make_action_id, upsert_actions,
+    action_queue_environment_clause,
+    ...
+)
+```
+
+All four are confirmed in `utils/__init__.py` exports. ✅ — this is actually fine. No issue.
+
+---
+
+**4. `sections/query_workbench.py` orphan still on disk**
+
+Still present after multiple reviews. Not a bug, but it's now the longest-standing cleanup item. Any developer looking at the `sections/` directory will find a module that isn't registered anywhere and wonder if it's needed.
+
+---
+
+### 🔵 Low
+
+**5. `snowflake.yml` — stage path changed from `DBA_MAINT_DB.PUBLIC.OVERWATCH_STAGE` to `DBA_MAINT_DB.OVERWATCH.OVERWATCH_STAGE`**
+
+This is likely intentional (moving to a dedicated schema), but the internal tables referenced in `config.py` (`ALERT_DB`, `ALERT_SCHEMA`, `ACTION_QUEUE_TABLE`) still point to `DBA_MAINT_DB` / `OVERWATCH` schema. Confirm that `ALERT_SCHEMA` in `config.py` is now `OVERWATCH` (not `PUBLIC`) — if it was updated there too, this is consistent. If not, the internal tables and the stage are now in different schemas which is fine but worth documenting.
+
+**6. `utils/mart.py` — `_active_environment()` still reads session state inside utility layer**
+
+Unchanged from prior review. Still a known limitation rather than a bug in normal SiS operation.
+
+---
+
+## Updated Section Ratings
+
+Three sections changed this update:
+
+| Section | Previous | Updated | Reason |
+|---|---|---|---|
+| **DBA Control Room** | B+ | **A−** | `get_active_company()` fix + `force_refresh` fix resolve the two correctness issues. Only remaining gap is the App Performance pane being a no-op in SiS. |
+| **Warehouse Health** | B+ | **A−** | `FACT_WAREHOUSE_OPERABILITY_DAILY` mart surface, `build_mart_warehouse_heatmap_sql` export fix, and operability board with approval/rollback/verification flags is a significant upgrade. |
+| `utils/__init__.py` | A− | **A** | All missing exports resolved. Export system is now complete and consistent. |
+
+---
+
+## Updated Overall Grade: **A−**
+
+The last **A−** gap is the App Performance pane being misleading in SiS (high-priority, one fix), and the Triage view column name mismatch (medium-priority, would make exceptions invisible in that tab). Fix those two and the codebase is at **A**. The mart setup SQL being absent from the repo remains the single biggest deployment gap — everything else is code quality.
