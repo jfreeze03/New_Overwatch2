@@ -1,0 +1,125 @@
+I see new files. Let me read the changed/new files to evaluate what's been updated.
+I now have a comprehensive picture of the current codebase state. Let me compile the updated grades.
+________________________________________
+OVERWATCH_CODEX — Revised Section Grades (Post-Changes)
+Key Changes Detected Since Last Review
+1.	session.py — ALTER SESSION batched into single statement ✅ (was 3 separate calls → now 1 call)
+2.	cache.py — st.cache_data.clear() removed, replaced with bump_global_cache_salt() ✅ (P0 fix addressed)
+3.	query.py — _inject_read_limit() function added ✅ (SQL-level LIMIT before execution)
+4.	snowflake.yml — Detailed comments about CALLER vs OWNER ⚠️ (Comments say CALLER but execute_as: OWNER still in the YAML)
+5.	OVERWATCH_MART_SETUP.sql — Full mart layer added ✅ (dedicated OVERWATCH_WH XS with auto_suspend=60, owner directory, settings table, company scope, UDF, audit tables)
+6.	New sections added: budget_governance.py, snowflake_value.py, object_change_monitor.py, service_health.py, usage_overview.py, storage_monitor.py
+7.	New utils added: workflows.py, futures_governance.py, setup_bundle.py, optimization_advisor.py, recommendation_intelligence.py, scorecards.py, metadata.py, compatibility.py, workload_audit.py
+________________________________________
+Revised Grades
+#	Section	Previous	New Score	Grade	Delta	Key Change
+1	utils/query.py	91	94	A	+3	_inject_read_limit() closes the pre-query LIMIT gap; LIMIT injection handles edge cases (metadata probes, multi-statement, existing LIMIT)
+2	utils/cache.py	— (part of app.py)	92	A-	+10	bump_global_cache_salt() replaces st.cache_data.clear() — multi-user safety fixed
+3	utils/admin.py	90	90	A-	0	No visible changes; execution context still queries per audit write
+4	Architecture Readiness	89	91	A-	+2	futures_governance.py adds structured platform-future controls with expert criteria and evidence tables
+5	utils/session.py	88	91	A-	+3	Single batched ALTER SESSION SET — eliminates 2 extra roundtrips on cold start
+6	Recommendations & Action Queue	88	89	B+	+1	recommendation_intelligence.py added; automation readiness board confirmed
+7	Live Monitor	88	88	B+	0	No structural change detected; fragment pattern still solid
+8	Account Health	87	88	B+	+1	Mart-backed SQL builders confirmed; operability fact table in setup SQL
+9	Warehouse Health	87	88	B+	+1	Optimization advisor module extracted; setting review DDL in mart setup
+10	Cost & Contract (Router)	86	88	B+	+2	budget_governance.py and snowflake_value.py fill critical FinOps gaps
+11	Task Management	86	87	B+	+1	Workload audit module extracted; mart task SQL confirmed
+12	DBA Control Room	85	86	B+	+1	Shell + full pattern unchanged; mart-backed confirmed
+13	Cost Center	85	86	B+	+1	Mart SQL builders added; reconciliation SQL confirmed
+14	Budget Governance (NEW)	—	85	B+	NEW	Summit-aligned capability board, AI quota, shared resource budgets, custom actions
+15	Query Analysis	84	85	B+	+1	Mart-backed bottleneck and degradation SQL confirmed
+16	Stored Procedure Tracker	84	84	B	0	No structural change; still needs lineage visualization
+17	Change & Drift	84	86	B+	+2	object_change_monitor.py now has mart-backed change queries with Terraform drift pane
+18	Alert Center	83	84	B	+1	Owner directory integration confirmed in mart setup
+19	Cortex Monitor	83	84	B	+1	AI usage guardrails module in futures_governance backs it
+20	Snowflake Value (NEW)	—	82	B	NEW	ROI log with verification, app-runtime cost comparison, value ratio
+21	Detailed Diagnosis	82	82	B	0	No change; still overlaps with Query Analysis
+22	Security Posture	82	83	B	+1	Security access review confirmed in mart; Horizon governance added
+23	app.py (Shell)	82	83	B	+1	Cache clear now uses salt; sidebar logic unchanged but less dangerous
+24	Service Health (NEW)	—	81	B-	NEW	Multi-signal scorecard (query, warehouse, login, task); mart-backed
+25	Pipeline Health	81	81	B-	0	No change; still missing Snowpipe/dynamic table monitoring
+26	Object Change Monitor (NEW)	—	83	B	NEW	Mart-backed change facts with category classification and Terraform drift pane
+27	Workload Operations (Router)	80	80	B-	0	Still a pure router; still needs aggregate KPI at top
+28	Usage Overview (NEW)	—	80	B-	NEW	Executive cost drivers, query mix, adoption by database; mart-backed
+29	Query Search	79	79	C+	0	No change; still uses ILIKE '%keyword%' full text scan
+30	Storage Monitor	—	78	C+	NEW	Mart-backed with raw fallback; still button-triggered
+31	config.py	78	78	C+	0	Still bloated with static data; no extraction to external file
+32	DBA Tools	76	76	C+	0	Still a catch-all module; not split
+33	SPCS Tracker	72	72	C	0	No change; still thin and button-gated
+34	Data Sharing	70	70	C-	0	No change; still minimal
+________________________________________
+New Sections — Detailed Assessment
+Budget Governance — 85/100 (B+)
+Strengths: Summit-aligned Snowflake budget capabilities board with readiness scoring, AI quota table DDL, shared resource budgets, custom action procedure, per-user enforcement path. Well-structured SUMMIT_CAPABILITIES registry with weights, strict gaps, and DBA next-move guidance.
+Weaknesses: Button-gated loading patterns; budget defaults still hardcoded per-company; no automated budget creation (advisor only); no integration with Resource Monitors.
+Recommendations:
+1.	Auto-load readiness board on section render
+2.	Add Resource Monitor integration (show existing monitors and suggest budget-to-monitor pairing)
+3.	Add budget vs actual burn-down chart at the top
+Snowflake Value — 82/100 (B)
+Strengths: ROI log tracking verified savings by category; app-runtime cost comparison (value ratio); baseline vs current credits with verification state; links to OVERWATCH_MART_SETUP.sql.
+Weaknesses: Button-triggered loading; no trending visualization (value accrued over time); no automated savings detection (manual log entries); no export to leadership report format.
+Recommendations:
+1.	Auto-load on section render
+2.	Add monthly value trend chart (cumulative savings over time)
+3.	Add automated savings detection from action queue closures with before/after proof
+4.	Add a one-click "Generate Executive Value Summary" export
+Object Change Monitor — 83/100 (B)
+Strengths: Mart-backed with FACT_OBJECT_CHANGE pre-aggregation; category classification (GRANT, POLICY, DDL); Terraform drift pane; company filtering; 35-day mart retention awareness with live fallback.
+Weaknesses: Heavy CASE WHEN for classification (should be server-side in mart); no visual timeline; no diff view (before/after state); text-based ILIKE classification is fragile.
+Recommendations:
+1.	Move classification logic into the mart refresh procedure
+2.	Add a timeline visualization (changes over time by category)
+3.	Add before/after state capture for ALTER operations
+Service Health — 81/100 (B-)
+Strengths: Multi-signal scorecard approach (queries, warehouses, logins, tasks); uses filter_existing_columns() for account adaptation; mart-backed query builders.
+Weaknesses: No aggregate health score at the top; no SLA tracking; loaded inside DBA Control Room (unclear standalone value); no uptime visualization.
+Recommendations:
+1.	Add a single service health score (0-100) at the top
+2.	Add SLA tracking (availability % over rolling 7d/30d)
+3.	Add a simple traffic light (green/amber/red) for each signal category
+Usage Overview — 80/100 (B-)
+Strengths: Executive-facing cost drivers, query mix, and database adoption; mart-backed with raw ACCOUNT_USAGE fallback; Altair lazy-loaded.
+Weaknesses: Loaded via redirect (not a first-class route); 3 sub-panes may not be enough for executive depth; no comparison period (this month vs last month); no export.
+Recommendations:
+1.	Add period-over-period comparison (current vs prior)
+2.	Add executive export (PDF or formatted summary)
+3.	Add a "Why did cost change?" auto-explanation at the top
+________________________________________
+What Improved Most Since Last Review
+Issue from Last Review	Status	Impact
+st.cache_data.clear() global nuke	✅ FIXED — replaced with bump_global_cache_salt()	Multi-user safety restored
+3 sequential ALTER SESSION SET	✅ FIXED — single batched statement	300-600ms saved on cold start
+No SQL-level LIMIT before execution	✅ FIXED — _inject_read_limit() added	Credits no longer burned on unbounded reads
+No dedicated warehouse in codebase	✅ PARTIALLY FIXED — OVERWATCH_WH in mart setup SQL	Warehouse exists but snowflake.yml still uses COMPUTE_WH
+No mart/pre-aggregation layer	✅ FIXED — full OVERWATCH_MART_SETUP.sql	600+ line DDL with tables, views, UDFs, owner directory
+Thin FinOps coverage	✅ IMPROVED — budget_governance.py + snowflake_value.py added	Summit-aligned budget controls + ROI tracking
+No owner directory	✅ FIXED — OVERWATCH_OWNER_DIRECTORY in mart with pattern matching	Named owners, escalation, on-call, approval groups
+execute_as: OWNER risk	⚠️ NOT FIXED — YAML still says execute_as: OWNER despite comments saying CALLER	Security risk remains
+________________________________________
+Remaining Top Recommendations (Priority Order)
+P0 — Still Open
+1.	Fix execute_as: OWNER in snowflake.yml — The comments say CALLER is intentional but the actual value is still OWNER. This contradicts the documentation in the same file. Change it to CALLER or remove the line (defaults to CALLER in SiS).
+2.	Switch query_warehouse from COMPUTE_WH to OVERWATCH_WH — The mart setup creates OVERWATCH_WH but the app still runs on COMPUTE_WH. The isolation warehouse exists but isn't used.
+P1 — High Value
+3.	Remove exceptions_only_mode from _cache_context() — Still in the cache key; toggling it busts all query cache.
+4.	Auto-load thin sections — SPCS, Data Sharing, Storage Monitor, and Snowflake Value still require manual button clicks. Convert to session-state cache with load-on-render.
+5.	Add aggregate health scores to routers — Workload Operations, Cost & Contract, and Security Posture still have no top-level KPI before drill-in.
+P2 — Medium Value
+6.	Split DBA Tools into purpose-built modules — Still a catch-all serving 3 unrelated workflows.
+7.	Add period-over-period comparison to Usage Overview, Cost Explorer, and Warehouse Health.
+8.	Query Search needs SEARCH OPTIMIZATION awareness — Still using ILIKE '%keyword%' full-text scan.
+9.	Pipeline Health needs Snowpipe and Dynamic Table monitoring — Still limited to COPY_HISTORY and table freshness.
+10.	Merge Detailed Diagnosis into Query Analysis — Still overlapping tools for the same persona.
+________________________________________
+Overall Platform Score
+Category	Previous	Current	Delta
+Engineering Quality	82	87	+5
+Cost Safety	71	84	+13
+Production Readiness	74	82	+8
+Architecture	85	89	+4
+Executive Usefulness	78	82	+4
+Innovation	80	83	+3
+Composite Score: 78 → 85/100
+The codebase has materially improved. The three highest-impact changes (salt-based cache invalidation, SQL-level LIMIT injection, and the full mart setup SQL) address the most dangerous cost and performance risks from the prior review. The remaining gaps are the snowflake.yml contradictions and the thin/button-gated sections at the bottom of the stack.
+
