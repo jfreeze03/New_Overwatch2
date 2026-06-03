@@ -1,0 +1,519 @@
+________________________________________
+OVERWATCH_CODEX — Section-by-Section Grade Report
+________________________________________
+Core Infrastructure (not user-facing sections, but affects everything)
+app.py — Main Entry Point & Navigation Shell
+Score: 82/100 | Grade: B+
+Strengths:
+•	Lazy-loading sections via importlib — only the active section pays import cost
+•	Role-based visibility with clean fallback
+•	Section transition state prevents stale renders
+•	Global filter signature detection auto-clears relevant cache
+•	Connection probing with graceful degraded-mode rendering
+Weaknesses:
+•	700+ lines in a single file; sidebar logic, header rendering, bookmark panel, and Ask OVERWATCH all co-located
+•	unsafe_allow_html=True used 6+ times — works because of html.escape() but is fragile at scale
+•	st.cache_data.clear() is a global nuke in SiS deployments
+•	Module version checks with importlib.reload() scattered throughout — feels like a hot-patch workaround
+Recommendations:
+1.	Extract sidebar into utils/sidebar.py
+2.	Extract header rendering into utils/chrome.py
+3.	Replace st.cache_data.clear() with per-section salt invalidation
+4.	Replace inline HTML with Streamlit components where possible to reduce XSS surface
+________________________________________
+utils/query.py — Tiered Query Runner
+Score: 91/100 | Grade: A-
+Strengths:
+•	Four-tier caching (live 30s, recent 300s, historical 1800s, metadata 4h) — mature design
+•	Per-query telemetry with budget pressure warnings
+•	Result-size guards with admin vs standard thresholds
+•	De-duplicated warning messages
+•	safe_sql(), safe_identifier(), sql_literal() cover input sanitization
+Weaknesses:
+•	Result guard runs AFTER to_pandas() — Snowflake credits already burned
+•	_cache_context() includes exceptions_only_mode which busts cache unnecessarily
+•	No SQL-level LIMIT injection before execution
+•	safe_identifier() allows $ character
+Recommendations:
+1.	Add a _inject_limit() pre-pass for non-admin queries
+2.	Remove exceptions_only_mode from cache key — filter client-side
+3.	Add a max_rows parameter to run_query() that appends LIMIT before execution
+________________________________________
+utils/session.py — Session Management
+Score: 88/100 | Grade: B+
+Strengths:
+•	55-minute TTL with health check before reconnect
+•	Query tag applied at session level for cost attribution
+•	Statement timeout (840s) prevents runaway queries
+•	Dual-path connection (SiS injected vs Streamlit secrets)
+Weaknesses:
+•	3 sequential ALTER SESSION SET statements on cold start (could be batched)
+•	SELECT 1 keepalive every 55 minutes — low cost but unnecessary if session object tracks state
+•	No connection retry with backoff
+Recommendations:
+1.	Batch ALTER SESSION statements: ALTER SESSION SET QUERY_TAG='OVERWATCH', STATEMENT_TIMEOUT_IN_SECONDS=840, TIMEZONE='UTC'
+2.	Add exponential backoff on reconnection failure
+3.	Consider checking session._conn.is_closed() before SELECT 1
+________________________________________
+utils/admin.py — Admin Guardrails & Audit
+Score: 90/100 | Grade: A-
+Strengths:
+•	Admin toggle with role-based defaults (ACCOUNTADMIN/SYSADMIN default on)
+•	Date range clamping (35 days standard, 90 days admin)
+•	Full audit trail with SQL hash, execution context, and confirmation text
+•	require_admin_enabled() gate before any destructive action
+Weaknesses:
+•	Audit INSERT runs on same warehouse as dashboard reads — could compete under load
+•	_current_execution_context() executes SELECT CURRENT_USER(), CURRENT_ROLE() per audit write — could cache
+Recommendations:
+1.	Cache execution context for the session lifetime (role/user don't change mid-session)
+2.	Consider async audit writes or a separate XS warehouse for audit INSERTs
+________________________________________
+config.py — Central Configuration
+Score: 78/100 | Grade: C+
+Strengths:
+•	Single source of truth for credit rates, thresholds, company patterns
+•	SectionDefinition dataclass keeps navigation declarative
+•	Section redirects handle legacy bookmarks gracefully
+•	Forward-platform controls show architectural foresight
+Weaknesses:
+•	File is ~500+ lines; 14 large ARCHITECTURE_OBJECTIVES dicts and 11 FORWARD_PLATFORM_CONTROLS dicts bloat it
+•	No schema validation on config dicts — silent failures if a key is misspelled
+•	Hardcoded DEFAULT_ALERT_EMAIL with a real email address
+•	COMPUTE_CREDIT_CASE SQL fragment duplicated between config and SQL builders
+Recommendations:
+1.	Move ARCHITECTURE_OBJECTIVES and FORWARD_PLATFORM_CONTROLS to a YAML/JSON file or Snowflake table
+2.	Add a @dataclass for objective/control definitions with validation
+3.	Replace hardcoded email with environment variable or Snowflake secret
+4.	Centralize the CASE expression in one utility function
+________________________________________
+User-Facing Sections
+________________________________________
+1. DBA Control Room (Shell + Full)
+Score: 85/100 | Grade: B+
+Strengths:
+•	"Fast first-paint shell" pattern — shows context immediately, loads heavy workspace on demand
+•	Workflow-first design with operator briefing and evidence routing
+•	Lazy pandas import via _LazyPandas class — reduces cold start
+•	Score-based operability summary with clear rating labels
+Weaknesses:
+•	dba_control_room.py duplicates utility functions already in utils/ (e.g., safe_float, safe_int, get_active_environment, metric_confidence_label, freshness_note, render_operator_briefing)
+•	Full workspace loads ALL data sources when opened — no progressive loading within
+•	Shell → Full transition requires a full rerun
+Recommendations:
+1.	Remove all duplicated utility functions — import from utils/ only
+2.	Add progressive loading within the full workspace (load each board independently)
+3.	Consider st.fragment for individual boards so they don't block each other
+________________________________________
+2. Alert Center
+Score: 83/100 | Grade: B
+Strengths:
+•	9 sub-panes covering full alert lifecycle (control health → inbox → history → rules → email)
+•	Source plan documentation per pane — clear about what data each view needs
+•	Action queue routing for owned follow-up
+•	Suppression windows and SLA tracking
+Weaknesses:
+•	Many sub-panes means heavy navigation overhead for a single section
+•	_alert_center_action_session() pattern repeated everywhere — could be a decorator
+•	Inline lazy imports (from utils import ...) inside functions — adds latency
+•	No alert deduplication logic visible at the query level
+Recommendations:
+1.	Consolidate to 5-6 panes (merge Control Health + Issue Inbox; merge Rules + Suppression)
+2.	Move lazy imports to module top — the section is already lazy-loaded
+3.	Add alert deduplication/correlation logic (same root cause → one alert)
+________________________________________
+3. Account Health
+Score: 87/100 | Grade: B+
+Strengths:
+•	Morning Report and Executive Briefing are high-value leadership deliverables
+•	Resource Monitors tracked and surfaced
+•	Scope metadata validation ensures loaded data matches current filters
+•	Operability fact table for historical trending
+Weaknesses:
+•	_account_health_scope_meta() pattern is verbose — same validation exists in warehouse_health and others
+•	Many mart SQL builders imported — tight coupling to mart layer
+•	No clear "health score" visible at the top before drilling in (Overview pane)
+Recommendations:
+1.	Extract scope-meta validation into a shared decorator or base class
+2.	Add a single KPI score (0-100) at the very top of Overview before any charts
+3.	Add a "What changed since yesterday" delta summary
+________________________________________
+4. Workload Operations (Router)
+Score: 80/100 | Grade: B-
+Strengths:
+•	Clean workflow selector routing to 6 sub-modules
+•	Legacy workflow state migration for old bookmarks
+•	Operator briefing with clear first-move guidance
+•	Exceptions-only mode steers users to failures/breaches
+Weaknesses:
+•	This is purely a router — no independent value on its own
+•	Query diagnosis has a sub-radio inside the workflow selector (modal within modal)
+•	WORKFLOW_MODULES and WORKFLOWS tuple are out of sync (6 workflows but 7 module entries with "Root cause patterns" and "Detailed diagnosis")
+•	No aggregate workload health score at the top
+Recommendations:
+1.	Add a 3-metric summary row at the top (running queries, failed last hour, SLA breaches) before the workflow selector
+2.	Simplify the "Query diagnosis" sub-radio — just make them separate workflows
+3.	Sync module map with workflow tuple consistently
+________________________________________
+5. Live Monitor
+Score: 88/100 | Grade: B+
+Strengths:
+•	@st.fragment(run_every=N) for non-blocking auto-refresh — proper modern Streamlit pattern
+•	Fallback from INFORMATION_SCHEMA to ACCOUNT_USAGE when live metadata is blocked
+•	filter_existing_columns() adapts SQL to available columns — handles account variation gracefully
+•	Timeline and Sessions tabs separate concerns
+Weaknesses:
+•	RESULT_LIMIT=>500 scans 500 queries per refresh cycle — could be 100 for triage
+•	INFORMATION_SCHEMA.QUERY_HISTORY() table function doesn't accept warehouse filter as a parameter
+•	Fragment runs even when user is on Timeline or Sessions tab (due to Streamlit rendering)
+•	No "kill query" or "cancel" action button visible
+Recommendations:
+1.	Reduce RESULT_LIMIT to 100 for the live triage use case
+2.	Add WAREHOUSE_NAME=> parameter when warehouse filter is set
+3.	Gate fragment execution on active tab being "Active Queries"
+4.	Add admin-gated "Cancel Query" button with confirmation and audit trail
+________________________________________
+6. Query Analysis (Bottlenecks + Pattern Degradation)
+Score: 84/100 | Grade: B
+Strengths:
+•	Signal routing annotations (PRIMARY_SIGNAL, NEXT_WORKFLOW, NEXT_ACTION) — guides DBAs to the right tool
+•	Pattern degradation detection (comparing signature baselines)
+•	Mart-backed SQL with fallback to raw ACCOUNT_USAGE
+•	filter_existing_columns() adapts to account metadata availability
+Weaknesses:
+•	"AI Diagnosis" pane listed but unclear what it does (Cortex-powered?)
+•	No query plan visualization (EXPLAIN output)
+•	Relies on text-based heuristics for bottleneck categorization rather than actual operator stats
+•	No historical comparison (this week vs last week)
+Recommendations:
+1.	Implement query plan parsing for the top-N expensive queries
+2.	Add week-over-week degradation delta with visual indicators
+3.	Clarify and implement the "AI Diagnosis" pane or remove it from the tuple
+________________________________________
+7. Detailed Diagnosis
+Score: 82/100 | Grade: B
+Strengths:
+•	Six distinct diagnosis modes (execution time, queued, blocked, compile, spill, bytes scanned)
+•	Each mode routes to the correct next workflow
+•	Mart-backed with raw ACCOUNT_USAGE fallback
+•	Configurable days/limit controls
+Weaknesses:
+•	No visualization — appears to be table-only
+•	Modes overlap with Query Analysis (both diagnose slow/spilling queries)
+•	No "compare to baseline" feature
+Recommendations:
+1.	Add time-series visualization showing the selected metric over the diagnosis window
+2.	Differentiate clearly from Query Analysis — this should be the "deep dive on one query" tool
+3.	Add a baseline overlay (avg/p95 for this warehouse or user)
+________________________________________
+8. Query Search
+Score: 79/100 | Grade: C+
+Strengths:
+•	Combined query ID and text search in one interface
+•	sql_literal() used for user input — safe parameterization
+•	Min 3-character guard prevents expensive full-text scans
+•	Configurable row limit (50-500)
+Weaknesses:
+•	Text search uses ILIKE '%keyword%' — cannot use pruning, scans entire query_text column
+•	30-day max lookback is arbitrary — should respect global date range
+•	No saved/recent search history
+•	No query plan drilldown from results
+Recommendations:
+1.	Use SEARCH_OPTIMIZATION_SERVICE on QUERY_TEXT if available, or warn about scan cost
+2.	Integrate global date range instead of hardcoded 30-day slider
+3.	Add "Recent Searches" in session state for quick re-runs
+4.	Add inline drilldown to query profile from search results
+________________________________________
+9. Task Management
+Score: 86/100 | Grade: B+
+Strengths:
+•	Full lifecycle: History, Failure Console, SLA & Cost Drift, ETL Audit, Control Center, Execute Task
+•	Admin-gated execute/suspend/resume/cancel with audit trail
+•	Owner resolution and action queue integration
+•	Mart-backed with critical-path SQL builder
+Weaknesses:
+•	6 sub-views is heavy for a sub-section inside Workload Operations
+•	"Execute Task" as a sub-tab creates confusion (is this a DBA action or a monitoring view?)
+•	safe_identifier() validation on task names but no confirmation dialog for destructive actions visible in header
+•	Task graph visualization missing (DAG structure)
+Recommendations:
+1.	Add a DAG/graph visualization for task dependencies (even text-based)
+2.	Move "Execute Task" into Control Center as a sub-action, not a separate view
+3.	Add pre-flight safety checks before task execution (check dependencies, last run status)
+________________________________________
+10. Stored Procedure Tracker
+Score: 84/100 | Grade: B
+Strengths:
+•	Links procedures to task graphs (orphan detection)
+•	Signal routing for SLA breach, cost regression, and suspended tasks
+•	Procedure runtime drift detection
+•	Owner resolution from directory
+Weaknesses:
+•	No call-graph or lineage visualization
+•	Cost attribution is estimated (warehouse-time allocation) — could be misleading
+•	No comparison to previous release window
+•	Pattern matching for procedure names (CALL regex) is fragile
+Recommendations:
+1.	Add release-window comparison (before/after deployment)
+2.	Visualize procedure → child query → warehouse lineage
+3.	Add confidence labels to cost estimates (currently allocated, not exact)
+4.	Harden the CALL regex to handle quoted identifiers and schema-qualified names
+________________________________________
+11. Pipeline Health
+Score: 81/100 | Grade: B-
+Strengths:
+•	Three focused views: Freshness SLA, Load Failures, Volume Watch
+•	Action queue integration with severity-based routing
+•	Clear signal routes per finding type
+•	Mart-backed SQL builders
+Weaknesses:
+•	No visualization of pipeline DAG or data flow
+•	Freshness is table-level only — no column-level or partition-level freshness
+•	No Snowpipe monitoring (only COPY_HISTORY)
+•	Volume watch thresholds appear hardcoded
+Recommendations:
+1.	Add Snowpipe monitoring (PIPE_USAGE_HISTORY)
+2.	Add dynamic table lag monitoring
+3.	Make volume watch thresholds configurable per-table or per-owner
+4.	Add a pipeline dependency graph (even basic source → stage → table → downstream)
+________________________________________
+12. Warehouse Health
+Score: 87/100 | Grade: B+
+Strengths:
+•	Comprehensive: Overview, Efficiency, Spill, Heatmap, Optimization Advisor
+•	Workload heatmap (concurrency by warehouse/day/hour) — high-value for capacity planning
+•	Setting review DDL with audit trail
+•	Operability fact table for daily trending
+•	Optimization advisor with actionable recommendations
+Weaknesses:
+•	No warehouse comparison view (A vs B side-by-side)
+•	No right-sizing recommendation with confidence level
+•	Efficiency metrics (credits/query) can be misleading for multi-cluster warehouses
+•	Heatmap could be overwhelming for accounts with 20+ warehouses
+Recommendations:
+1.	Add warehouse comparison mode (select 2, compare metrics)
+2.	Add right-sizing confidence: "Based on p95 queue time and spill data, this warehouse could be [size]"
+3.	Add multi-cluster scaling event timeline
+4.	Paginate or filter heatmap to top-N active warehouses
+________________________________________
+13. Architecture Readiness
+Score: 89/100 | Grade: B+
+Strengths:
+•	Seven sub-panes covering isolation, clustering, cache, DR, AI futures, and forward watchlist
+•	Architecture objectives with named owners, RPO/RTO, approval groups, and match priority
+•	Forward-platform controls for emerging Snowflake capabilities (agents, MCP, Cortex Sense, CoWork)
+•	Evidence-based recommendations (not just "you should cluster")
+Weaknesses:
+•	Heavily dependent on static config (ARCHITECTURE_OBJECTIVES) — doesn't auto-discover from Snowflake
+•	"AI & Platform Futures" pane may overwhelm users who don't use AI features
+•	No architecture decision record (ADR) workflow
+•	Clustering strategy needs actual clustering-depth proof queries, not just recommendations
+Recommendations:
+1.	Add auto-discovery: scan SHOW WAREHOUSES / SHOW DATABASES and flag any without an objective
+2.	Add a "Decisions" sub-pane where DBAs can record and track architecture decisions
+3.	Add actual clustering depth probes (SYSTEM$CLUSTERING_DEPTH) for top candidates
+4.	Gate the AI futures pane behind a feature flag for accounts not yet using Cortex
+________________________________________
+14. Cost & Contract (Router)
+Score: 86/100 | Grade: B+
+Strengths:
+•	6 workflows covering full FinOps lifecycle
+•	Cost control score with clear rating labels (Controlled/Watch/Pressure/Incident)
+•	Cockpit SQL with period-over-period delta and variance analysis
+•	Savings verification ledger
+Weaknesses:
+•	Router-only section like Workload Operations — needs an aggregate summary
+•	Cockpit SQL scans WAREHOUSE_METERING_HISTORY twice (current + prior)
+•	No contract burn-down visualization at the top level
+•	Budget governance pane scope is unclear
+Recommendations:
+1.	Add a contract burn-down chart at the router level (spend vs commitment, projected overshoot)
+2.	Pre-aggregate metering data into a daily summary table to avoid dual full scans
+3.	Add month-end projection with confidence interval
+4.	Add a "cost anomaly" indicator that surfaces only when something abnormal happens
+________________________________________
+15. Cost Center (Attribution Sub-Section)
+Score: 85/100 | Grade: B+
+Strengths:
+•	10 sub-views covering explorer, explain-bill, leaderboard, burn, reconciliation, forecast, budget, attribution, chargeback, contract
+•	Chargeback uses get_company_case_expr() for correct ALFA/Trexis allocation
+•	Environment-aware cost splitting
+•	Reconciliation between metered and query-attributed credits
+Weaknesses:
+•	10 sub-views inside a sub-section is extreme navigation depth (Section → Workflow → View)
+•	Forecast appears to be trend extrapolation, not ML-based
+•	Reconciliation gap between metered and attributed credits not explained well to users
+•	No export to finance systems (CSV only)
+Recommendations:
+1.	Consolidate to 6-7 views (merge Burn Rate + Forecast; merge Attribution + Chargeback)
+2.	Add clear confidence labels on forecast ("linear projection from 14-day trend, not predictive")
+3.	Add structured export format compatible with common FinOps tools
+4.	Show reconciliation gap as a % with explanation of why it exists
+________________________________________
+16. Cortex Monitor (AI Spend)
+Score: 83/100 | Grade: B
+Strengths:
+•	Budget control score with spiral-risk detection
+•	User attribution for AI spend
+•	Anomaly detection (Z-score based)
+•	Predictive alerts with generated SQL
+Weaknesses:
+•	Anomaly detection is basic (Z-score) — doesn't account for seasonality
+•	No model-level breakdown (which Cortex function costs most?)
+•	"Predictive alerts" may be misleading if based on simple trend extrapolation
+•	Budget defaults ($5000) are hardcoded
+Recommendations:
+1.	Add per-model/function cost breakdown (COMPLETE vs EXTRACT vs custom)
+2.	Replace Z-score with a time-series anomaly method that handles day-of-week patterns
+3.	Make budget configurable per-role or per-department, not just globally
+4.	Add Cortex Agent usage tracking (distinct from Cortex functions)
+________________________________________
+17. SPCS Tracker
+Score: 72/100 | Grade: C
+Strengths:
+•	Compute pool attribution
+•	Daily trend visualization
+•	Company filtering (ALFA vs Trexis by pool name pattern)
+Weaknesses:
+•	Button-triggered loading — no auto-load when section renders
+•	Very thin section — only one view with credits-by-pool and a daily trend
+•	No service-level breakdown (which services in a pool cost most?)
+•	No uptime/availability tracking
+•	No memory/CPU utilization correlation
+•	ILIKE pattern matching for company is brittle
+Recommendations:
+1.	Auto-load data when section renders (use session state cache like other sections)
+2.	Add service-level breakdown within pools
+3.	Add node/GPU utilization metrics if available
+4.	Add cost-per-request or cost-per-inference for ML services
+5.	Add lifecycle tracking (when was pool created, scaled, suspended)
+________________________________________
+18. Recommendations & Action Queue
+Score: 88/100 | Grade: B+
+Strengths:
+•	Persistent action queue with owner, ticket, due date, proof tracking
+•	Automation readiness board (assesses which recommendations can be auto-applied)
+•	harden_recommendation() function ensures consistent recommendation structure
+•	Verification evidence tracking (before/after proof)
+•	Anomaly log integration
+Weaknesses:
+•	"Automation Readiness" board exists but no actual automation executes
+•	No recommendation prioritization by ROI (savings × confidence / effort)
+•	No SLA tracking on recommendation age (how long has this been open?)
+•	No integration with ticketing systems (JIRA/ServiceNow)
+Recommendations:
+1.	Add ROI score: (monthly_savings × confidence) / estimated_effort_hours
+2.	Add age tracking with escalation rules (>7 days unacked → escalate)
+3.	Add JIRA/ServiceNow webhook integration for action queue items
+4.	Add "auto-apply" capability for low-risk, high-confidence recommendations with admin gate
+________________________________________
+19. Security Posture (Router)
+Score: 82/100 | Grade: B
+Strengths:
+•	Two focused workflows (access posture + data sharing exposure)
+•	Security access review DDL with comprehensive finding schema
+•	Operability fact table for trending
+•	Scope filter validation
+Weaknesses:
+•	Only 2 workflows — feels thin compared to other routers
+•	No MFA coverage dashboard
+•	No privilege graph visualization (who can access what)
+•	No RBAC risk scoring
+•	Missing: network policy review, session policy review, trust center integration
+Recommendations:
+1.	Add workflows: "Privilege Sprawl", "Network & Session Policies", "Trust Center"
+2.	Add an RBAC risk graph (even simplified: role → grants → sensitive objects)
+3.	Add MFA adoption tracking with action items for non-compliant users
+4.	Add Snowflake Trust Center integration if available
+________________________________________
+20. Data Sharing
+Score: 70/100 | Grade: C-
+Strengths:
+•	Transfer credit tracking
+•	Shared database inventory
+•	Clear messaging about account-level scope limitations
+Weaknesses:
+•	Button-triggered loading (not auto-loaded)
+•	No outbound share monitoring (what are we exposing?)
+•	No consumer access tracking
+•	No share freshness/SLA monitoring
+•	Very thin — only 2 loads and basic tables/charts
+•	No data classification correlation (are we sharing sensitive data?)
+Recommendations:
+1.	Add outbound share inventory with sensitivity classification
+2.	Add consumer access frequency and freshness monitoring
+3.	Auto-load on section render
+4.	Add marketplace listing tracking if applicable
+5.	Correlate with Horizon governance (classification → share exposure)
+________________________________________
+21. Change & Drift (Router)
+Score: 84/100 | Grade: B
+Strengths:
+•	5 workflows covering full change lifecycle
+•	Change control evidence table with comprehensive schema
+•	Ticket pattern detection via regex (JIRA/CHG/INC format)
+•	Owner/approver tracking with approval state
+•	"Controlled DBA actions" workflow for guarded admin operations
+Weaknesses:
+•	"Schema and object drift" and "Data movement and replication" both route to dba_tools — feels like a catch-all
+•	No visual drift timeline (before/after state)
+•	No Git/Terraform integration for infrastructure-as-code reconciliation
+•	Ticket detection is regex-only — no API validation that tickets exist
+Recommendations:
+1.	Add a drift timeline visualization (object created/altered/dropped over time)
+2.	Separate data movement into its own module (replication + dynamic tables + Snowpipe)
+3.	Add IaC reconciliation pane (show objects that exist in Snowflake but not in Terraform, or vice versa)
+4.	Add Snowflake Access History lineage visualization
+________________________________________
+22. DBA Tools (Sub-Module)
+Score: 76/100 | Grade: C+
+Based on routing patterns, this appears to handle schema drift, data movement, and controlled actions.
+Strengths:
+•	Consolidates admin operations in one guarded location
+•	Admin audit trail for all destructive actions
+Weaknesses:
+•	Serves as a catch-all for 3 different workflows in Change & Drift
+•	Name is generic — "DBA Tools" doesn't communicate purpose
+•	Likely overloaded with unrelated responsibilities
+Recommendations:
+1.	Split into 3 dedicated modules: schema_drift.py, data_movement.py, controlled_actions.py
+2.	Rename to something more specific if kept as one module
+3.	Ensure each sub-concern has its own scope validation and loading pattern
+________________________________________
+Summary Table
+#	Section	Score	Grade	Verdict
+1	utils/query.py (Query Runner)	91	A-	Best-in-class tiered caching and telemetry
+2	utils/admin.py (Guardrails)	90	A-	Solid admin gating and audit trail
+3	Architecture Readiness	89	B+	Forward-thinking platform governance
+4	Live Monitor	88	B+	Modern fragment-based auto-refresh
+5	utils/session.py (Session Mgmt)	88	B+	Clean session lifecycle
+6	Recommendations & Action Queue	88	B+	Persistent queue with verification evidence
+7	Account Health	87	B+	Strong executive deliverable
+8	Warehouse Health	87	B+	Comprehensive capacity signals
+9	Cost & Contract (Router)	86	B+	Full FinOps lifecycle coverage
+10	Task Management	86	B+	Complete lifecycle with admin controls
+11	DBA Control Room	85	B+	Fast first-paint + workflow routing
+12	Cost Center	85	B+	Deep attribution, slightly over-navigated
+13	Query Analysis	84	B	Good signal routing, needs visualization
+14	Stored Procedure Tracker	84	B	Task linkage strong, lineage weak
+15	Change & Drift	84	B	Good schema, needs visual tools
+16	Alert Center	83	B	Full lifecycle but too many panes
+17	Cortex Monitor	83	B	Budget control solid, anomaly detection basic
+18	app.py (Shell)	82	B	Works well, needs decomposition
+19	Detailed Diagnosis	82	B	Useful modes, overlaps with Query Analysis
+20	Security Posture	82	B	Thin — needs privilege graph and MFA
+21	Pipeline Health	81	B-	Freshness good, no Snowpipe/dynamic table
+22	Workload Operations (Router)	80	B-	Pure router, needs aggregate KPI
+23	Query Search	79	C+	Functional but expensive text scan
+24	config.py	78	C+	Bloated with static data
+25	DBA Tools	76	C+	Overloaded catch-all module
+26	SPCS Tracker	72	C	Too thin, button-gated, no depth
+27	Data Sharing	70	C-	Minimal — missing outbound/consumer monitoring
+________________________________________
+Top 5 Highest-Impact Improvements Across All Sections
+1.	Add aggregate health scores at router levels (Workload Operations, Cost & Contract, Security Posture) — executives need one number before drilling in.
+2.	Replace button-triggered loading in thin sections (SPCS, Data Sharing) with auto-load on render using session state caching — these feel like afterthoughts when users must click "Load" manually.
+3.	Merge overlapping sections — Query Analysis + Detailed Diagnosis could be one module with mode selection. DBA Tools should split into 3 purpose-built modules.
+4.	Add visualization where currently table-only — Detailed Diagnosis, Change & Drift, and Pipeline Health all lack time-series or graph visuals that would make them instantly more useful.
+5.	Reduce navigation depth — Cost Center with 10 sub-views inside a 6-workflow router inside a section is 3 levels deep. Target max 2 clicks from section to answer.
+
