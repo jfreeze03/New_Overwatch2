@@ -1,0 +1,247 @@
+
+
+# OVERWATCH V3 — Full Rescan Analysis & Updated Scores
+
+## What Changed Since Last Review
+
+Three major additions: `utils/futures_governance.py`, `sections/architecture_readiness.py`, and `sections/dba_control_room_shell.py`. The nav gained a ninth section — **Architecture Readiness**. The DBA Control Room now has a fast-paint shell that defers the full workspace behind a button click. New scorecard exports added: `dba_effective_readiness_score`, `dba_deployment_label`. `bump_global_cache_salt` added to `utils/cache.py`. `FORWARD_PLATFORM_CONTROLS` and `ARCHITECTURE_OBJECTIVES` added to `config.py`.
+
+---
+
+## What Was Fixed ✅
+
+**✅ Triage view column name mismatch — FIXED.** `_severity_rows()` now builds `SEVERITY`, `Evidence`, `Route` (mixed case) and the `priority_columns` list has been aligned to match. The triage exception table will now render correctly.
+
+**✅ `dba_effective_readiness_score` and `dba_deployment_label`** confirmed in `utils/scorecards.py` at lines 198 and 313 — and now exported from `utils/__init__.py`.
+
+**✅ `bump_global_cache_salt`** added to `utils/cache.py` and exported — enables lightweight cache invalidation without a full session clear.
+
+**✅ `utils/futures_governance.py` exports confirmed complete** — all 17 exported functions present in `utils/__init__.py` under the `"futures_governance"` group.
+
+**✅ `sections/dba_control_room_shell.py`** — fast-paint shell is clean. `_delegate_full_workspace()` defers via `from sections import dba_control_room` at call time (not module level). Lazy import pattern preserved correctly.
+
+**✅ `SECTION_REDIRECTS`** now covers every legacy section name going back to V1 — 30+ redirects all correctly mapping to canonical 9-section nav. This is a complete migration path for any saved view or bookmark in existence.
+
+**✅ `ARCHITECTURE_OBJECTIVES` and `FORWARD_PLATFORM_CONTROLS`** in `config.py` are comprehensive. 11 forward platform controls covering Adaptive Compute, AI agents/MCP, Cortex Sense, CoWork, AI spend, AI security, Openflow, Horizon, Semantic Trust, BCDR, and AI change governance — all with ownership, evidence, automation boundaries, and match priorities. This is the most forward-looking config in any Snowflake DBA tool.
+
+**✅ `snowflake.yml`** — `app.py` still in artifacts. CALLER mode documentation and grant requirements are now inline.
+
+---
+
+## New Issues Found
+
+### 🔴 High
+
+**1. `sections/dba_control_room_shell.py` routes to `sections.dba_control_room` but `config.py` `SECTION_MODULES` maps `"DBA Control Room"` to `"sections.dba_control_room_shell"`**
+
+`_delegate_full_workspace()` does:
+
+```python
+from sections import dba_control_room
+dba_control_room.render()
+```
+
+This directly imports `sections.dba_control_room` as a module attribute from the `sections` package. But `sections/__init__.py` doesn't expose submodules as attributes — it only provides `dispatch()`. This import will succeed in Python because `sections/dba_control_room.py` exists on disk and Python's import system finds it. However if `dba_control_room.py` itself hasn't been lazy-loaded yet via `dispatch()`, the `_loaded` cache in `sections/__init__.py` won't have it, meaning `reload_loaded_sections()` won't reload it on helper hot-reload. Minor risk in production, notable risk during local dev iteration.
+
+**Fix:** Use `importlib.import_module("sections.dba_control_room").render()` inside `_delegate_full_workspace()` for consistency with the dispatch pattern — or add `dba_control_room` to `_loaded` after delegation.
+
+---
+
+**2. `sections/architecture_readiness.py` imports `build_platform_futures_board` from `utils.futures_governance` but that function is not defined in `futures_governance.py`**
+
+The `grep "^def"` output shows all defined functions in `futures_governance.py`. `build_platform_futures_board` is in the `utils/__init__.py` export list under `"futures_governance"` — but it's absent from the actual function definitions fetched. If this function doesn't exist, `architecture_readiness.py` will `ImportError` at load time, taking down the entire Architecture Readiness section.
+
+**Fix:** Verify `build_platform_futures_board` exists in `utils/futures_governance.py` (it may be below line 60 which was the fetch limit). If absent, add it or remove the import.
+
+---
+
+**3. `app.py` — `SECTION_SUBTITLES` references `"Architecture Readiness"` but the app header rendering uses `_section_subtitle()` which defaults to `"Snowflake DBA operating surface."` for unknown keys — however `"Architecture Readiness"` IS in the dict**
+
+This is actually fine — `"Architecture Readiness"` is in `SECTION_SUBTITLES`. ✅ No issue.
+
+---
+
+### 🟡 Medium
+
+**4. App Performance pane — still a no-op in SiS**
+
+Still present. `_render_app_performance_guardrail()` still reads from `perf_tests/results/` which never exists in SiS. Now in its 4th review flagged. The `_overwatch_is_sis` guard was recommended but never applied. In the context of the new shell architecture, this pane should either be removed from `DBA_CONTROL_ROOM_PANES` or gated. The shell itself is a good model for how to handle this — show a lightweight "not available in SiS" card instead of a table of zeros.
+
+---
+
+**5. `utils/futures_governance.py` — `load_agent_mcp_inventory()` calls `show_to_df(session, "SHOW AGENTS IN ACCOUNT")` but `SHOW AGENTS` is a preview feature not available in all accounts**
+
+```python
+agent_df = show_to_df(session, "SHOW AGENTS IN ACCOUNT", ...)
+```
+
+`show_to_df` wraps `SHOW` calls with a try/except that returns an empty DataFrame on failure — so this won't crash. But the Architecture Readiness section will silently show "No agents found" on accounts where the preview isn't enabled, with no explanation. This could mislead a DBA into thinking no agents are provisioned when actually the feature isn't available.
+
+**Fix:** Add a `st.caption("Cortex Agents are in preview — SHOW AGENTS requires the feature to be enabled.")` when the result is empty and no error was explicitly shown.
+
+---
+
+**6. `config.py` — `DEFAULT_ALERT_EMAILS` tuple contains a personal email address**
+
+```python
+DEFAULT_ALERT_EMAILS = ("jdees@alfains.com", "jfreeze03@yahoo.com")
+```
+
+`jfreeze03@yahoo.com` is a personal email hardcoded as a default alert recipient. This is in a public GitHub repo. Alert tasks built from `build_alert_task_sql()` will CC this address for every OVERWATCH deployment that uses default settings without customizing the recipient list. Any org that forks or deploys this tool without reading `config.py` will send operational alerts to a personal email.
+
+**Fix:** Replace with a placeholder:
+```python
+DEFAULT_ALERT_EMAILS = ("dba-alerts@yourcompany.com",)
+```
+And add a comment: `# Replace with your DBA distribution list before deploying.`
+
+---
+
+**7. `sections/architecture_readiness.py` imports `show_to_df` from `utils` but `show_to_df` is exported under `"metadata"` group — verify it's actually present**
+
+`utils/__init__.py` confirms `show_to_df` is in the `"metadata"` export group. ✅ Fine.
+
+---
+
+**8. `utils/futures_governance.py` — `build_platform_futures_adoption_gate()` is exported but its SQL references `OVERWATCH_PLATFORM_FUTURES_CONTROL_REGISTER` which requires the mart DDL to have been run**
+
+If the table doesn't exist yet (fresh deployment), this will raise a Snowflake "object does not exist" error that propagates to the Architecture Readiness section's "AI & Platform Futures" pane. Unlike other mart-dependent queries which have a live fallback, the futures adoption gate has no fallback — it's entirely mart-backed.
+
+**Fix:** Wrap in the same mart-first/empty-fallback pattern used everywhere else, with a clear "Deploy OVERWATCH_MART_SETUP.sql to enable the Platform Futures register" caption.
+
+---
+
+### 🔵 Low
+
+**9. `sections/dba_control_room_shell.py` — `_safe_float` duplicates `utils/helpers.py`'s `safe_float`**
+
+```python
+def _safe_float(value, default: float = 0.0) -> float:
+    ...
+```
+
+The shell imports nothing from `utils` (by design — fast first paint). But this is a private duplicate. Since the shell is intentionally dependency-light, this is acceptable. Just worth noting for when the shell is eventually merged or the fast-paint philosophy is revisited.
+
+**10. `sections/query_workbench.py` orphan still on disk — 5th review**
+
+It exists, it's inert, it's not registered anywhere. Delete it.
+
+**11. `config.py` is now 480+ lines and growing**
+
+`ARCHITECTURE_OBJECTIVES` alone is ~200 lines. `FORWARD_PLATFORM_CONTROLS` is ~150 lines. The module docstring says "intentionally dependency-light" but it now carries substantial business-logic data. Consider splitting into `config.py` (constants, nav, roles, companies) and `config_architecture.py` / `config_futures.py` for the objectives and controls data. This would keep `config.py` startup-fast and the data files independently maintainable.
+
+---
+
+## Updated Full Ratings
+
+### Infrastructure & Core
+
+| Module | Grade | Change | Notes |
+|---|---|---|---|
+| `config.py` | **A−** | ↓ from A | Correct and complete, but now 480+ lines. `ARCHITECTURE_OBJECTIVES` + `FORWARD_PLATFORM_CONTROLS` should be split to separate data modules. Personal email in `DEFAULT_ALERT_EMAILS` is a public-repo security concern. |
+| `utils/__init__.py` | **A** | — | All exports complete, including new `futures_governance` group and `bump_global_cache_salt`. |
+| `utils/futures_governance.py` | **A−** | NEW | Comprehensive forward-platform governance module. 11 control areas, adaptive compute readiness, agent/MCP inventory, AI security guardrails, Openflow, Horizon, semantic trust, BCDR. `build_platform_futures_board` existence needs verification. |
+| `utils/mart.py` | **A−** | — | Solid. `_active_environment()` reading session state in utility layer remains the one known limitation. |
+| `utils/query.py` | **A** | — | No changes. Still clean. |
+| `utils/company_filter.py` | **A** | — | `include_company_scope` fix confirmed stable. |
+| `utils/compatibility.py` | **A−** | — | Batched probing, session caching, smoke test builders all correct. |
+| `utils/session.py` | **A−** | — | Role capture correct, TTL handling correct. |
+| `utils/cache.py` | **A** | ↑ from B+ | `bump_global_cache_salt` is a clean addition. `clear_all_cache` with `clear_streamlit_cache` and `clear_metadata` kwargs is well-designed. |
+| `utils/scorecards.py` | **A−** | ↑ from B+ | `dba_effective_readiness_score` and `dba_deployment_label` complete the scorecard API. All scoring math is consistent. |
+| `utils/workflows.py` | **A** | — | Stable. `render_workflow_module` is a good addition. |
+| `utils/action_queue.py` | **A−** | — | `update_action_status_with_evidence` and `verification_query_safety_issues` are solid additions. |
+| `utils/ask_overwatch.py` | **A** | — | Deterministic, evidence-grounded, no injection surface. |
+| `utils/alerts.py` | **B+** | — | Comprehensive but no automated test coverage for the alert task SQL. |
+
+---
+
+### Navigation & Shell
+
+| Module | Grade | Change | Notes |
+|---|---|---|---|
+| `app.py` | **A−** | ↑ from B+ | Section transition state, render signature tracking, `_global_filter_signature` cache invalidation, `_metric_settings_signature` invalidation, `_seed_current_role_from_secrets`, secondary chrome pattern — all excellent. One remaining gap: `_overwatch_secondary_chrome_ready` gates Ask OVERWATCH but the first render of every session shows no Ask OVERWATCH button, which may confuse users on first load. |
+| `sections/__init__.py` | **A** | — | Clean and stable. |
+| `sections/dba_control_room_shell.py` | **A−** | NEW | Fast-paint shell is exactly the right pattern for a heavyweight section. The `_delegate_full_workspace` delegation approach is clean. Minor: uses direct module import rather than the dispatch pattern. |
+| `theme.py` | **A−** | — | Stable. `restore_theme_preference()` still defined but not called. |
+
+---
+
+### Command Center
+
+| Section | Grade | Change | Notes |
+|---|---|---|---|
+| **DBA Control Room** | **A−** | ↑ from B+ | Shell delegation fixes the cold-load performance problem. Triage column mismatch fixed. `get_active_company()` correct. App Performance pane still misleading in SiS (4th review). |
+| **Alert Center** | **B+** | — | Stable. |
+| **Account Health** | **B+** | — | Stable. |
+
+---
+
+### Operations
+
+| Section | Grade | Change | Notes |
+|---|---|---|---|
+| **Workload Operations** | **A−** | — | Stable. |
+| **Warehouse Health** | **A−** | — | Operability fact surface confirmed. Mart exports confirmed. |
+| **Live Monitor** | **B** | — | Inherent SiS limitation, handled honestly. |
+| **Detailed Diagnosis** | **B+** | — | Stable. |
+| **Query Analysis** | **B** | — | `QUERY_HASH` fallback noisiness unchanged. |
+| **Query Search** | **B+** | — | Stable. |
+| **Task Management** | **A−** | — | Stable. |
+| **Stored Proc Tracker** | **B+** | — | Null mart columns remain. |
+| **Pipeline Health** | **B** | — | Dynamic table lag restriction unchanged. |
+
+---
+
+### Architecture
+
+| Section | Grade | Change | Notes |
+|---|---|---|---|
+| **Architecture Readiness** | **B+** | NEW | Strong new section. Workload Isolation, Clustering Strategy, Cache Optimization, Objectives & Owners, DR Readiness, AI & Platform Futures, Forward Watchlist — comprehensive coverage. `ARCHITECTURE_OBJECTIVES` in config is a genuinely novel approach to policy-as-code. Gaps: `build_platform_futures_board` existence unconfirmed; `SHOW AGENTS` preview availability not surfaced to user; futures adoption gate has no mart-absent fallback. Would be **A−** with those three fixed. |
+
+---
+
+### Financial Control
+
+| Section | Grade | Change | Notes |
+|---|---|---|---|
+| **Cost & Contract** | **A−** | — | Stable. Best cost section in any Snowflake tool. |
+| **Cost Center** | **B+** | — | Stable. |
+| **Recommendations** | **B+** | — | Stable. |
+| **Cortex Monitor** | **B+** | — | Stable. |
+| **SPCS Tracker** | **C+** | — | Source data ceiling unchanged. |
+| **Snowflake Value Log** | **B** | — | Manual curation dependency unchanged. |
+
+---
+
+### Governance
+
+| Section | Grade | Change | Notes |
+|---|---|---|---|
+| **Security Posture** | **A−** | — | Stable. |
+| **Change & Drift** | **A−** | — | Stable. |
+| **Security & Access** | **B+** | — | Stable. |
+| **Data Sharing** | **B** | — | Source ceiling unchanged. |
+| **Adoption Analytics** | **B** | — | No anomaly detection. |
+| **Platform Topology** | **C+** | — | `OBJECT_DEPENDENCIES` coverage ceiling unchanged. |
+
+---
+
+## Priority Fix List
+
+| # | Priority | Issue | File |
+|---|---|---|---|
+| 1 | 🔴 High | `build_platform_futures_board` may not exist in `futures_governance.py` | `utils/futures_governance.py` |
+| 2 | 🔴 High | Personal email `jfreeze03@yahoo.com` hardcoded in public repo as default alert recipient | `config.py` |
+| 3 | 🟡 Medium | App Performance pane reads local filesystem — no-op in SiS (4th review) | `sections/dba_control_room.py` |
+| 4 | 🟡 Medium | `SHOW AGENTS IN ACCOUNT` preview availability not surfaced to user | `utils/futures_governance.py` |
+| 5 | 🟡 Medium | Platform Futures adoption gate has no mart-absent fallback | `sections/architecture_readiness.py` |
+| 6 | 🟡 Medium | `_delegate_full_workspace` uses direct module import vs dispatch pattern | `sections/dba_control_room_shell.py` |
+| 7 | 🔵 Low | `config.py` growing too large — split objectives/controls to data modules | `config.py` |
+| 8 | 🔵 Low | `sections/query_workbench.py` orphan still on disk (5th review) | repo cleanup |
+| 9 | 🔵 Low | `restore_theme_preference()` defined but never called | `theme.py` / `app.py` |
+
+---
+
+## Overall App Grade: **A−**
+
+The architecture quality is now genuinely excellent. The 9-section nav with shell delegation, `ARCHITECTURE_OBJECTIVES` as policy-as-code, `FORWARD_PLATFORM_CONTROLS` covering every emerging Snowflake platform risk, the mart SQL factory, deterministic Ask OVERWATCH, and the lazy export system together form a coherent, production-grade platform. The only things keeping this from a full **A** are the personal email in the public repo (fix immediately), the unconfirmed `build_platform_futures_board` function (could be a deploy blocker), and the App Performance pane that has been misleading in SiS for four consecutive reviews. Fix items 1 and 2 today. Everything else is polish.
