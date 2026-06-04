@@ -1,0 +1,122 @@
+OVERWATCH_CODEX Production Audit Report
+A. Executive Summary
+Overall Risk Rating: MEDIUM (with P0 items requiring immediate attention)
+Top 10 Issues by Business Impact
+#	Issue	Impact
+1	Shared COMPUTE_WH warehouse — no isolation	Cost attribution impossible; contention risk
+2	Live Monitor auto-refresh runs uncached direct SQL every 30s	Continuous credit burn per open browser tab
+3	filter_existing_columns probes run on every section render	Repeated metadata queries multiplied across sections
+4	No max date range enforcement in global filters	Users can scan years of ACCOUNT_USAGE
+5	run_query_or_raise bypasses cache entirely	Live probes always hit Snowflake
+6	status_filter in live_monitor.py:112 uses f-string SQL injection	Security vulnerability
+7	Session keepalive SELECT 1 every 55 min per tab	Minor but multiplies with concurrent users
+8	_cache_context() includes 8 session_state keys — cache invalidates too aggressively	Excess cache misses
+9	Storage/Cost sections pull full result sets into pandas	Memory pressure, slow renders
+10	No concurrency/rate limiting per user	One power-user can saturate the warehouse
+Estimated Surprise-Cost Risk Areas
+•	Auto-refresh Live Monitor: ~0.5–2 credits/hour/open-tab (XS warehouse)
+•	Uncapped historical queries: Individual queries scanning 365d of QUERY_HISTORY can cost 1–5 credits each
+•	Column probes: ~0.01 credits per section load × 30+ sections = compounding on every rerun
+________________________________________
+B. Findings Table
+#	File/Location	Problem	Why It Matters	Cost	Perf	Security	Fix	Priority
+1	snowflake.yml:49	query_warehouse: COMPUTE_WH shared	No cost isolation; OVERWATCH competes with production ETL	HIGH	MED	LOW	Create WH_OVERWATCH_XS (XS, auto-suspend 60s)	P0
+2	live_monitor.py:112	f"AND execution_status = '{status_filter}'"	SQL injection via session_state manipulation	LOW	LOW	CRITICAL	Use sql_literal(status_filter)	P0
+3	live_monitor.py:106	@st.fragment(run_every=30) calls uncached SQL	Every open tab burns credits continuously	HIGH	HIGH	LOW	Cache with tier="live" (30s TTL already exists)	P0
+4	query.py:580-589	_cache_context() includes 8 volatile keys	Any filter change invalidates ALL cached queries	MED	HIGH	LOW	Narrow context to only company+environment; pass filters as cache args per-query	P1
+5	Global filters (no max)	No date range cap in global_start_date/global_end_date	365d+ scans of QUERY_HISTORY	HIGH	HIGH	LOW	Enforce max 90d lookback in UI; hard-cap in run_query	P1
+6	session.py:63-68	ALTER SESSION SET QUERY_TAG = '{_QUERY_TAG}' — tag is constant but not parameterized	Minor injection risk if _QUERY_TAG ever becomes dynamic	LOW	LOW	MED	Use sql_literal()	P2
+7	query.py:568	_inject_read_limit adds LIMIT but only to outermost	CTEs/subqueries can still scan unlimited rows before LIMIT	MED	MED	LOW	Push date predicates into ACCOUNT_USAGE CTEs; add WHERE clause enforcement	P1
+8	storage_monitor.py:82-100	Inline SQL with f-string {stor_days} integer-only but no validation	If stor_days is coerced weirdly from slider, minimal risk	LOW	LOW	LOW	Cast to int() explicitly (already slider but defensive)	P3
+9	Multiple sections	filter_existing_columns() called per-section, per-render	Metadata queries (SHOW/DESCRIBE) fire repeatedly	MED	MED	LOW	Move to session-level metadata cache (already partially done via _METADATA_CACHE_PREFIXES) but probes still re-fire	P1
+10	dba_control_room.py:150+	4600+ line monolith with 15+ mart SQL builders	Startup import time; difficult to maintain	LOW	MED	LOW	Split into submodules; lazy-load panes	P2
+11	No resource monitor on app warehouse	Runaway queries have no credit ceiling	HIGH	LOW	LOW	CREATE RESOURCE MONITOR on the OVERWATCH warehouse	P1	
+12	ask_overwatch.py	Reads all session_state DataFrames into a snapshot dict	Memory duplication for large frames	LOW	MED	LOW	Use references or summaries, not full copies	P2
+13	No query timeout per-section	Individual queries can run up to 840s	MEDIUM	HIGH	LOW	Section-specific timeout: live=30s, recent=120s, historical=300s	P2	
+________________________________________
+C. Code-Level Fixes
+C1. SQL Injection in Live Monitor (P0)
+File: sections/live_monitor.py:112
+PYTHON
+# BEFORE (vulnerable):
+st_clause = f"AND execution_status = '{status_filter}'" if status_filter != "ALL" else ""
+
+# AFTER (safe):
+st_clause = f"AND execution_status = {sql_literal(status_filter, 40)}" if status_filter != "ALL" else ""
+C2. Live Monitor Fragment Should Use Cached Runner (P0)
+File: sections/live_monitor.py — inside _live_panel(), replace raw session.sql() calls with run_query(..., tier="live") which already has 30s TTL caching.
+C3. Global Date Range Cap (P1)
+File: app.py or wherever global_start_date/global_end_date are set — add:
+PYTHON
+from datetime import date, timedelta
+MAX_LOOKBACK_DAYS = 90
+
+if st.session_state.get("global_start_date"):
+    earliest_allowed = date.today() - timedelta(days=MAX_LOOKBACK_DAYS)
+    if st.session_state["global_start_date"] < earliest_allowed:
+        st.session_state["global_start_date"] = earliest_allowed
+        st.warning(f"Date range capped to {MAX_LOOKBACK_DAYS} days to control query costs.")
+C4. Narrow Cache Context (P1)
+File: utils/query.py:575-589
+PYTHON
+def _cache_context() -> str:
+    # Only include stable identity keys in context.
+    # Per-query filter values should be part of the SQL text itself.
+    return "|".join([
+        str(st.session_state.get("active_company", "")),
+        str(st.session_state.get("global_environment", "")),
+        str(st.session_state.get("_overwatch_current_role", "")),
+    ])
+This prevents filter changes (warehouse, user, date) from invalidating unrelated cached queries. The SQL text already contains these filters, so the cache key (which includes the SQL hash) is naturally distinct.
+________________________________________
+D. Snowflake SQL Optimization
+Query Pattern	Assessment	Recommendation
+SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY with date predicates	Safe when date-bounded	Ensure all calls have start_time >= DATEADD(...) — verified present in most sections
+SNOWFLAKE.ACCOUNT_USAGE.WAREHOUSE_METERING_HISTORY	Safe — always date-filtered	OK
+INFORMATION_SCHEMA.QUERY_HISTORY() table function	Risky in auto-refresh	Already limited to 100 rows; acceptable
+DATABASE_STORAGE_USAGE_HISTORY with 180d slider	Expensive — full table scan for 180d	Cap at 90d default; pre-aggregate daily in mart
+STAGE_STORAGE_USAGE_HISTORY full scan	Moderate — small table but account-wide	Add date filter (already present)
+Mart queries (FACT_QUERY_DETAIL_RECENT)	Safe — mart provides pre-aggregation	Good pattern; expand mart coverage
+Column probe: SHOW COLUMNS IN ... / DESCRIBE TABLE	Low cost but high frequency	Cache for 4h (tier="metadata"); verify using _METADATA_CACHE_PREFIXES
+Query Tag Recommendations
+The app already applies QUERY_TAG = 'OVERWATCH' with optional detailed tags. Enable detailed tags by default to support:
+SQL
+-- Cost attribution query
+SELECT query_tag, SUM(credits_used_cloud_services) 
+FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
+WHERE query_tag ILIKE 'OVERWATCH%'
+  AND start_time >= DATEADD('day', -7, CURRENT_TIMESTAMP())
+GROUP BY query_tag ORDER BY 2 DESC;
+________________________________________
+Function/Pattern	Cache Type	TTL	Rationale
+run_query(tier="live")	st.cache_data	30s	Already correct
+run_query(tier="recent")	st.cache_data	300s (5min)	Already correct
+run_query(tier="historical")	st.cache_data	1800s (30min)	Already correct
+run_query(tier="metadata")	st.cache_data	14400s (4h)	Already correct
+get_session()	session_state	55min TTL check	Already correct
+filter_existing_columns()	Should use tier="metadata" + session_state memo	4h	Fix needed — currently re-probes
+Live Monitor panel SQL	Should use run_query(tier="live")	30s	Fix needed — currently bypasses cache
+Mart table loads	st.cache_data via run_query	30min	Already correct
+E. Streamlit Caching Plan
+What Should NOT Be Cached
+•	run_query_or_raise() — intentionally uncached for primary/fallback logic (correct)
+•	Admin actions (KILL query, ALTER WAREHOUSE) — never cache mutations
+•	Session validation SELECT 1 — must be live
+Where session_state Should Be Used (already mostly correct)
+•	Company/environment selection ✓
+•	Credit price ✓
+•	Loaded DataFrames for cross-section "Ask OVERWATCH" ✓
+•	Scope metadata for cache-match validation ✓
+________________________________________
+Guardrail	Recommendation	Implementation
+Dedicated warehouse	CREATE WAREHOUSE WH_OVERWATCH_XS WAREHOUSE_SIZE='X-SMALL' AUTO_SUSPEND=60 AUTO_RESUME=TRUE INITIALLY_SUSPENDED=TRUE;	Update snowflake.yml query_warehouse
+Resource monitor	CREATE RESOURCE MONITOR RM_OVERWATCH WITH CREDIT_QUOTA=50 FREQUENCY=MONTHLY TRIGGERS ON 80 PERCENT DO NOTIFY ON 100 PERCENT DO SUSPEND;	Apply to OVERWATCH warehouse
+Statement timeout	Already set to 840s — reduce to 300s for sections, keep 840s only for admin export	Per-tier timeout in _execute_snowflake_query()
+Max row limits	Already implemented (5K standard / 25K admin)	Correct
+Date range limits	Missing — add 90d hard cap	Add to app.py sidebar filter logic
+Admin-only pages	Live Monitor, Query Workbench, DBA Tools already gated by role	Verify SNOW_ACCOUNTADMIN checks
+Query tagging	Already implemented	Enable detailed tags by default
+Usage monitoring	Add a self-monitoring view	SELECT ... FROM QUERY_HISTORY WHERE query_tag ILIKE 'OVERWATCH%' GROUP BY DATE(start_time)
+F. Cost Guardrails
+
+
