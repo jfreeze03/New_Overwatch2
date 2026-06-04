@@ -1,0 +1,379 @@
+OVERWATCH_CODEX — Section-by-Section Audit
+Rating Scale
+•	A = Production-ready, well-designed, justified
+•	B = Solid but has issues to fix
+•	C = Functional but questionable value or has significant problems
+•	D = Needs major rework or removal consideration
+•	F = Actively harmful or waste
+________________________________________
+1. DBA Control Room (dba_control_room.py) — B+
+Lines: 4,618 | Role: Primary landing page / operational triage
+Strengths:
+•	Workflow-first design; routes DBAs to specific tools
+•	Mart-first with live ACCOUNT_USAGE fallback — correct architecture
+•	Lazy imports via _LazyPandas and _lazy_util reduce startup cost
+•	Operator briefing pattern is excellent UX for leadership
+Weaknesses:
+•	4,600 lines is too long. This is 3 files pretending to be 1.
+•	Duplicates safe_float, safe_int, get_active_environment from utils (why?)
+•	15+ mart SQL builder references makes the dependency graph unclear
+•	Button-driven loads on every pane — fine, but the pane enum is 15+ items
+Recommendation: Split into dba_control_room_shell.py (routing/layout, <200 lines) + dba_control_room_panes/ directory. Already has dba_control_room_shell.py as a separate file — finish the split.
+________________________________________
+2. Cost Center (cost_center.py) — B
+Lines: 3,155 | Role: Credit attribution, chargeback, forecast
+Strengths:
+•	10 well-defined views covering the full FinOps lifecycle
+•	Company/environment filtering consistently applied
+•	Mart-first with fallback — good cost isolation
+•	Chargeback logic uses get_company_case_expr() from company_filter — correct
+Weaknesses:
+•	Also too long (3,155 lines) — 10 views in one file is unmanageable
+•	"Forecast" view is just linear projection from recent burn — could mislead executives
+•	"Attribution" and "Chargeback" overlap heavily; users won't know which to use
+•	No cost-per-section breakdown visible to the user
+Recommendation:
+•	Split into cost_center/ with one file per view
+•	Merge "Attribution" and "Chargeback" into a single "Cost Allocation" view
+•	Add confidence labels to Forecast (you have the metric_confidence_label helper — use it)
+________________________________________
+3. Account Health (account_health.py) — B+
+Lines: 3,862 | Role: KPIs, resource monitors, morning report
+Strengths:
+•	Executive Briefing is actionable and exportable
+•	Morning Report pattern is unique and high-value for DBA teams
+•	Scope metadata matching prevents stale data from wrong filters
+•	get_session_for_action() gracefully handles offline mode
+Weaknesses:
+•	Another >3K line monolith
+•	"Overview" pane has 8+ metrics that all fire independently — could batch into one SQL
+•	Resource Monitor section queries SHOW RESOURCE MONITORS (metadata tier) but doesn't cache long enough
+•	Daily DBA Checklist persists to a custom table — no schema migration/versioning
+Recommendation: Keep all 4 panes but consolidate the Overview queries into a single mart CTE. Add a schema version check for the checklist table.
+________________________________________
+4. Warehouse Health (warehouse_health.py) — B
+Lines: Large | Role: Warehouse performance, sizing, idle detection
+Strengths:
+•	Optimization Advisor (Idle, Duplicates, Right-Sizing) is high-ROI
+•	Drillable bar charts for warehouse-level metrics
+•	Already uses filter_existing_columns for cross-account compatibility
+Weaknesses:
+•	The "Right-Sizing" advisor relies on heuristic scoring — no Snowflake-native QAS/auto-scaling awareness
+•	Idle warehouse detection only checks hourly buckets — misses 5-min idle bursts within an hour
+•	No direct integration with ALTER WAREHOUSE actions
+Recommendation: Add QAS eligibility check (QUERY_ACCELERATION_ELIGIBLE column). Consider recommending multi-cluster scaling before upsizing.
+________________________________________
+5. Live Monitor (live_monitor.py) — B-
+Lines: 472 | Role: Real-time query monitoring
+Strengths:
+•	Uses @st.fragment(run_every=N) correctly — non-blocking auto-refresh
+•	INFORMATION_SCHEMA → ACCOUNT_USAGE fallback is thoughtful
+•	Timeline and Sessions sub-views add forensic depth
+Weaknesses:
+•	SQL injection at line 112 (status_filter in f-string) — CRITICAL
+•	Auto-refresh bypasses the tiered cache — burns credits continuously
+•	filter_existing_columns probes fire inside the fragment on every refresh cycle
+•	No "stop all" kill switch if a user leaves the tab open
+Recommendation:
+•	Fix injection immediately (P0)
+•	Route fragment queries through run_query(tier="live") — gets 30s caching for free
+•	Move filter_existing_columns outside the fragment (it's metadata, won't change intra-session)
+________________________________________
+6. Query Analysis (query_analysis.py) — B
+Lines: ~200 initial (routes to sub-modules) | Role: Slow/failed/expensive query breakdown
+Strengths:
+•	Good decomposition — routes to detailed_diagnosis.py and query_workbench.py
+•	Mart-first pattern for aggregate metrics
+•	Drilldown to individual query_id is essential DBA functionality
+Weaknesses:
+•	detailed_diagnosis.py diagnosis modes are static — should auto-detect which is most impactful
+•	Query Workbench root-cause scoring is a hand-tuned formula with no calibration
+•	No saved investigation / bookmark integration
+Recommendation: Add "auto-triage" mode that ranks diagnosis modes by current evidence. Connect findings to the Action Queue.
+________________________________________
+7. Security Posture (security_posture.py) — B+
+Lines: 2,660 | Role: Failed logins, MFA gaps, grants, role risk
+Strengths:
+•	Access review table with structured finding types
+•	Workflow routing to "Access posture" and "Data sharing exposure"
+•	Environment-aware — filters findings by PROD/DEV/SAN
+•	Operability fact table for trend tracking
+Weaknesses:
+•	2,660 lines — another candidate for split
+•	DDL creation inlined in the section file (should be in mart setup SQL)
+•	No integration with Snowflake Trust Center or Network Policies
+•	"Severity" ratings are subjective with no documented calibration
+Recommendation: Keep as-is but move DDL to OVERWATCH_MART_SETUP.sql. Add Trust Center scanner findings if the account has it enabled.
+________________________________________
+8. Architecture Readiness (architecture_readiness.py) — C+
+Lines: 1,874 | Role: Isolation, clustering, cache, DR, AI futures
+Strengths:
+•	Unique value prop — no other tool does "architecture compliance" scoring
+•	Objectives table in config is auditable and version-controlled
+•	Forward-looking (AI, SPCS, adaptive compute, Horizon)
+Weaknesses:
+•	"AI & Platform Futures" is speculative — it checks for things many accounts don't use yet
+•	ARCHITECTURE_OBJECTIVES in config.py are ALFA-specific hardcoded business rules
+•	Clustering Strategy pane gives recommendations but has no proof-of-work (no SYSTEM$CLUSTERING_DEPTH integration)
+•	DR Readiness checks are passive (looks for replication objects) — doesn't validate failover actually works
+Recommendation: Keep "Workload Isolation", "Cache Optimization", and "Objectives & Owners". Demote "AI & Platform Futures" and "Forward Watchlist" into a separate "Roadmap" section that doesn't inflate the navigation. Make clustering recommendations require SYSTEM$CLUSTERING_INFORMATION evidence.
+________________________________________
+9. Cost & Contract (cost_contract.py) — B-
+Lines: Not fully read but referenced extensively | Role: Budget command center, spike analysis
+Strengths:
+•	Contract utilization tracking is high business value
+•	Spike root-cause analysis routes to specific warehouses/users
+•	Integration with budget governance actions
+Weaknesses:
+•	Heavy overlap with Cost Center — users will be confused about which to use
+•	"Contract Utilization" requires manual contract terms input (fragile)
+•	Multiple mart tables needed (budget, spike, governance, incident) — high maintenance
+Recommendation: MERGE with Cost Center. Make Cost Center the single cost surface with "Contract" as one of its views.
+________________________________________
+10. Change & Drift (change_drift.py) — B+
+Lines: 3,201 | Role: DDL changes, schema drift, replication, controlled actions
+Strengths:
+•	Workflow router pattern cleanly delegates to sub-modules
+•	"Controlled DBA actions" with generated SQL and safety checks — excellent
+•	Object change detection covers CREATE/DROP/ALTER/GRANT
+•	Stored procedure lineage tracking is rare and valuable
+Weaknesses:
+•	5 workflows in one router = complex navigation for new users
+•	"Schema and object drift" overlaps with DBA Tools
+•	"Data movement and replication" also routes to DBA Tools — why not just be there?
+Recommendation: Keep the router pattern but reduce to 3 workflows: "Changes & DDL", "Lineage & Procedures", "Controlled Actions". Fold replication into Pipeline Health.
+________________________________________
+11. Task Management (task_management.py) — B+
+Lines: 3,123 | Role: Task/DAG monitoring, ETL audit, execute controls
+Strengths:
+•	"Execute Task" with admin gating is well-designed (requires opt-in)
+•	Failure Console with runbook routing — operationally excellent
+•	SLA & Cost Drift tracks task regression over time
+•	ETL Audit integrates with custom audit table framework
+Weaknesses:
+•	6 views in one file — too many
+•	"Control Center" and "Execute Task" are admin-only but load UI scaffolding for all users
+•	No DAG visualization (task graphs are described textually, not visually)
+Recommendation: Split admin-only views into a separate gated module. Consider adding a simple DAG diagram using Mermaid-style text rendering.
+________________________________________
+12. Cortex Monitor (cortex_monitor.py) — C+
+Lines: 1,077 | Role: AI/Cortex usage tracking
+Strengths:
+•	Budget control scoring with projected spend
+•	Anomaly detection (Z-score) for unusual spend patterns
+•	Per-user attribution for Cortex Code costs
+•	Predictive alert generation SQL
+Weaknesses:
+•	Only relevant if the account uses Cortex heavily — many ALFA environments may not
+•	Z-score anomaly detection is naive (assumes normal distribution on small samples)
+•	AI credit rate ($2.20) is hardcoded — will be wrong after Snowflake pricing changes
+•	"Predictive Alerts" is just linear extrapolation
+Recommendation: Gate behind feature detection. Only show Cortex Monitor in navigation if the account has Cortex usage in the last 30 days. Move credit rate to a settings page.
+________________________________________
+13. Adoption Analytics (adoption_analytics.py) — C
+Lines: 374 | Role: User/workload adoption metrics
+Strengths:
+•	Compact implementation
+•	Mart-first with live fallback capped at 35 days
+•	Role & Workload Mix breakdown is useful for platform teams
+Weaknesses:
+•	Who is this for? DBAs don't need "adoption" metrics — product managers do
+•	4 panes for what could be 1 summary chart + drill-down
+•	Overlaps with Platform Topology ("Warehouse To User", "Roles")
+•	Low signal-to-noise: "X users ran Y queries" is not actionable
+Recommendation: MERGE into Platform Topology as a "User Activity" pane. Remove as standalone section.
+________________________________________
+14. Platform Topology (platform_topology.py) — C+
+Lines: 354 | Role: Relationship maps for teams/objects/workloads
+Strengths:
+•	Conceptually valuable (who uses what)
+•	"Application Flows" using session/client metadata is clever
+•	"Report Pack" is useful for stakeholder exports
+Weaknesses:
+•	Multiple filter_existing_columns probes across 3 different views (QUERY_HISTORY, SESSIONS, LOGIN_HISTORY)
+•	No actual graph/network visualization — just tables and bar charts
+•	"Database To Schema" is trivially available via INFORMATION_SCHEMA
+•	Competes with Adoption Analytics for mindshare
+Recommendation: Keep but absorb Adoption Analytics into it. Add a heatmap visualization for warehouse→user relationships. Drop "Database To Schema" (it's just SHOW SCHEMAS).
+________________________________________
+15. Pipeline Health (pipeline_health.py) — B+
+Lines: 511 | Role: Freshness, load failures, volume, Snowpipe, dynamic tables
+Strengths:
+•	Freshness SLA is actionable and connects to Action Queue
+•	Volume Watch detects load anomalies
+•	Dynamic Tables monitoring is forward-looking
+•	Snowpipe usage attribution is hard to get elsewhere
+Weaknesses:
+•	5 panes is a lot for what should be a "data reliability" view
+•	No integration with Snowflake's native data quality DMFs
+•	Freshness SLA thresholds are not configurable per-table
+Recommendation: Keep as-is. Add configurable SLA thresholds per database/schema. Consider adding DMF integration when the account uses them.
+________________________________________
+16. Budget Governance (budget_governance.py) — C+
+Lines: 735 | Role: Snowflake budget DDL, AI quotas
+Strengths:
+•	Summit capabilities matrix is informative
+•	AI per-user quota framework is novel
+•	Generated DDL for budget objects
+Weaknesses:
+•	Overlaps heavily with Cost Center and Cost & Contract
+•	"Ready to Deploy" capabilities that are just docs — not actual deployed controls
+•	AI quota enforcement depends on revoking PUBLIC grants — most orgs won't do this
+•	Summit capabilities will rot if not maintained
+Recommendation: MERGE into Cost Center as an "Admin: Budget Setup" pane. Remove as standalone section.
+________________________________________
+17. SPCS Tracker (spcs_tracker.py) — C
+Lines: 115 | Role: Snowpark Container Services cost tracking
+Strengths:
+•	Compact, single-purpose
+•	Date-bounded, company-filtered
+Weaknesses:
+•	115 lines for one simple aggregation query — barely justifies its own section
+•	Only shows credit usage — no container health, restart patterns, or compute pool sizing
+•	SPCS may not be used at all in many accounts
+Recommendation: MERGE into Cost Center as a "Container Services" view. Or merge into Architecture Readiness "AI & Platform Futures" if SPCS is considered a platform feature.
+________________________________________
+18. Storage Monitor (storage_monitor.py) — B-
+Lines: 205 | Role: Database/stage/failsafe storage with cost estimates
+Strengths:
+•	Clear cost-per-TB calculation
+•	Mart-first with live fallback
+•	Compact implementation
+Weaknesses:
+•	180-day slider with no cap is expensive on the live fallback path
+•	No table-level breakdown (only database-level aggregates)
+•	No Time Travel storage visibility (often the largest surprise cost)
+•	$23/TB/month default is wrong for many Enterprise accounts
+Recommendation: Add Time Travel and Failsafe visibility per-database. Make storage cost configurable. Cap live fallback to 90 days.
+________________________________________
+19. Service Health (service_health.py) — B-
+Lines: 324 | Role: Operational posture score across queries, warehouses, logins, tasks
+Strengths:
+•	Composite health score from multiple signals
+•	Mart-first with clear SQL builders
+•	Login health adds security dimension
+Weaknesses:
+•	Overlaps with Account Health "Overview" (both show KPI scores)
+•	Overlaps with DBA Control Room health score
+•	Three different "health scores" in the app is confusing
+Recommendation: MERGE into Account Health as the "Service Posture" pane. Eliminate as standalone section. One health score, one place.
+________________________________________
+20. Data Sharing (data_sharing.py) — C
+Lines: 177 | Role: Data transfer credits, shared databases
+Strengths:
+•	Simple and focused
+•	Transfer history with geo-level breakdown
+•	Correctly gates company-filtered transfer (account-wide only for "ALL")
+Weaknesses:
+•	Very thin — 177 lines for one query and one listing
+•	No Secure Data Sharing governance (who has access to shared objects)
+•	No listing/marketplace cost visibility
+•	Already routed from Security Posture as "Data sharing exposure"
+Recommendation: MERGE into Security Posture workflow. It already has a slot for it.
+________________________________________
+21. Snowflake Value (snowflake_value.py) — C-
+Lines: 260 | Role: ROI/optimization value scorecard
+Strengths:
+•	Tracks savings from OVERWATCH actions (nice self-justification metric)
+•	Per-company ROI if the column exists
+Weaknesses:
+•	Vanity metrics. Self-reported savings are unreliable.
+•	Requires a custom OVERWATCH_ROI_LOG table that users must manually populate
+•	No automated savings detection — all manual entries
+•	Leadership will ask "prove it" and this can't
+Recommendation: DEMOTE to a tab inside Recommendations (which already tracks actions). Don't give it navigation real estate unless savings are auto-calculated from before/after evidence.
+________________________________________
+22. Alert Center (alert_center.py) — B+
+Lines: 1,579 | Role: Alert inbox, triage, email delivery, rules
+Strengths:
+•	8 well-defined panes covering the full alert lifecycle
+•	Email delivery integration
+•	Action Queue routing connects alerts to work items
+•	Rules & SLAs + Suppression Windows = proper alert management
+Weaknesses:
+•	Requires significant custom table setup (alert tables, delivery log, rules, owner directory)
+•	No integration with Snowflake native alerts (ALERT objects)
+•	8 panes may overwhelm a DBA who just wants "what's broken"
+Recommendation: Keep but add Snowflake native ALERT integration. Consider collapsing to 5 panes: "Inbox", "History", "Delivery", "Rules", "Queue Routing".
+________________________________________
+23. Recommendations (recommendations.py) — B+
+Lines: 934 | Role: Idle warehouses, spill, errors, automation, action queue
+Strengths:
+•	Automation Readiness board is excellent — quantifies "what can be automated"
+•	Action Queue persistence makes findings durable across sessions
+•	Anomaly Log provides historical evidence
+•	Harden/verification framework adds rigor to recommendations
+Weaknesses:
+•	Recommendation scoring is heuristic-only — no ML or statistical backing
+•	Overlap between "Recommendations" here and "Optimization Advisor" in Warehouse Health
+•	Action Queue is referenced from 6+ other sections — single point of failure
+Recommendation: MERGE Optimization Advisor into this section as the single "what to fix" surface. Rename to "Optimization & Actions."
+________________________________________
+24. Query Search (query_search.py) — B
+Lines: 195 | Role: Find queries by ID or text
+Strengths:
+•	Safety caps (6+ chars for contains, 3+ for prefix)
+•	Day-cap on text-contains searches
+•	Compact, focused, single-purpose
+Weaknesses:
+•	Only searches ACCOUNT_USAGE.QUERY_HISTORY (45-90 min lag)
+•	No INFORMATION_SCHEMA.QUERY_HISTORY real-time search option
+•	No saved searches / recent searches
+Recommendation: Keep as-is. Add "also search live metadata" checkbox for recent queries.
+________________________________________
+25. Workload Operations (workload_operations.py) — B+
+Lines: 168 | Role: Workflow router for all operational DBA work
+Strengths:
+•	Clean router pattern — 168 lines, delegates everything
+•	6 workflows map to clear DBA job-to-be-done
+•	Proper module routing with workflow guides
+Weaknesses:
+•	"History search" routes to Query Search which has limited functionality
+•	Some workflows route to the same module (DBA Tools gets 2 routes)
+Recommendation: Keep. This is the correct architecture — thin routers delegating to specialist modules.
+________________________________________
+26. Query Workbench (query_workbench.py) — B
+Lines: 791 | Role: Root-cause analysis for query problems
+Strengths:
+•	Root-cause scoring aggregates 5 problem dimensions
+•	Mart-first pattern
+•	Action queue integration for findings
+Weaknesses:
+•	"Legacy root-cause helpers" (per file comment) — feels like technical debt
+•	Scoring formula is hand-tuned with no documentation of calibration
+•	No query plan visualization (would be transformative)
+Recommendation: Modernize scoring with calibration data. Add EXPLAIN plan integration if feasible.
+________________________________________
+27. Stored Proc Tracker (stored_proc_tracker.py) — B
+Routed from Change & Drift. Tracks procedure ownership, runtime drift, cost attribution.
+Recommendation: Keep — unique value, well-scoped.
+________________________________________
+28. Object Change Monitor (object_change_monitor.py) — B
+Routed from Change & Drift. DDL/GRANT change detection.
+Recommendation: Keep — essential for change audit compliance.
+________________________________________
+Consolidation Recommendations Summary
+Action	Sections	Result
+MERGE	Cost Center + Cost & Contract + Budget Governance + SPCS Tracker	→ "Cost & FinOps" (one section, multiple views)
+MERGE	Adoption Analytics + Platform Topology	→ "Platform Topology"
+MERGE	Service Health + Account Health	→ "Account Health"
+MERGE	Data Sharing into Security Posture	→ "Security & Access"
+MERGE	Snowflake Value into Recommendations	→ "Recommendations & ROI"
+MERGE	Optimization Advisor into Recommendations	→ "Optimization & Actions"
+SPLIT	DBA Control Room (4,618 lines)	→ Shell + pane modules
+GATE	Cortex Monitor	→ Only show if Cortex usage detected
+DEMOTE	Architecture Readiness "AI Futures"	→ Separate "Roadmap" section or tab
+Post-Consolidation Navigation (from ~20 sections to ~12):
+1.	DBA Control Room (landing)
+2.	Account Health
+3.	Workload Operations (router → Live, Query, Tasks, Procedures, Pipeline, Search)
+4.	Cost & FinOps
+5.	Warehouse Health
+6.	Security & Access
+7.	Change & Drift
+8.	Recommendations & Actions
+9.	Alert Center
+10.	Platform Topology
+11.	Cortex Monitor (gated)
+12.	Architecture Readiness
+
