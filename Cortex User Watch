@@ -1,0 +1,212 @@
+--https://medium.com/dataaichronicles/stop-snowflake-cortex-ai-bills-from-exploding-build-a-credit-monitoring-system-in-sql-33023b5bb763
+
+
+--Dedicated schema for AI governance objects
+CREATE SCHEMA IF NOT EXISTS DBA_MAINT_DB.OVERWATCH;
+
+-- Per-user credit limit registry
+CREATE TABLE IF NOT EXISTS DBA_MAINT_DB.OVERWATCH.AI_FUNCTIONS_ACCESS_CONTROL (
+    USER_NAME            VARCHAR        NOT NULL,
+    USER_ID              NUMBER,
+    GRANTED_AT           TIMESTAMP_LTZ  DEFAULT CURRENT_TIMESTAMP(),
+    MONTHLY_CREDIT_LIMIT NUMBER(38,6)   DEFAULT 10,   -- conservative start
+    IS_ACTIVE            BOOLEAN        DEFAULT TRUE,
+    REVOKED_AT           TIMESTAMP_LTZ,
+    REVOCATION_REASON    VARCHAR,
+    PRIMARY KEY (USER_NAME)
+);
+
+-- Deduplication guard: one alert per threshold per calendar month
+CREATE TABLE IF NOT EXISTS DBA_MAINT_DB.OVERWATCH.AI_FUNCTIONS_ALERT_STATE (
+    ALERT_NAME       VARCHAR        NOT NULL,
+    ALERT_MONTH      DATE           NOT NULL,
+    SENT_AT          TIMESTAMP_LTZ  DEFAULT CURRENT_TIMESTAMP(),
+    CREDITS_AT_ALERT NUMBER(38,6),
+    PRIMARY KEY (ALERT_NAME, ALERT_MONTH)
+);
+
+-- Seed with your users and their initial limits
+INSERT INTO DBA_MAINT_DB.OVERWATCH.AI_FUNCTIONS_ACCESS_CONTROL
+    (USER_NAME, MONTHLY_CREDIT_LIMIT)
+VALUES
+    ('ANALYST_ALICE',   25),
+    ('ENGINEER_BOB',    50),
+    ('PIPELINE_SVC',   200)
+ON CONFLICT (USER_NAME) DO NOTHING;
+
+
+--CMD 2 – Build the Real-Time Usage View
+CREATE OR REPLACE VIEW DBA_MAINT_DB.OVERWATCH.V_AI_CREDIT_USAGE_MTD AS
+WITH monthly_usage AS (
+    SELECT
+        u.USER_NAME,
+        u.FUNCTION_NAME,
+        u.MODEL_NAME,
+        SUM(u.CREDITS_USED)        AS CREDITS_MTD,
+        SUM(u.TOTAL_TOKENS)        AS TOKENS_MTD,
+        COUNT(DISTINCT u.QUERY_ID) AS QUERY_COUNT,
+        MAX(u.USAGE_DATE)          AS LAST_USED
+    FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_AISQL_USAGE_HISTORY u
+    WHERE DATE_TRUNC('MONTH', u.USAGE_DATE) = DATE_TRUNC('MONTH', CURRENT_DATE())
+    GROUP BY 1, 2, 3
+),
+user_totals AS (
+    SELECT
+        USER_NAME,
+        SUM(CREDITS_MTD)  AS TOTAL_CREDITS_MTD,
+        SUM(TOKENS_MTD)   AS TOTAL_TOKENS_MTD,
+        SUM(QUERY_COUNT)  AS TOTAL_QUERIES_MTD
+    FROM monthly_usage
+    GROUP BY 1
+)
+SELECT
+    t.USER_NAME,
+    t.TOTAL_CREDITS_MTD,
+    t.TOTAL_TOKENS_MTD,
+    t.TOTAL_QUERIES_MTD,
+    ac.MONTHLY_CREDIT_LIMIT,
+    ROUND(t.TOTAL_CREDITS_MTD / NULLIF(ac.MONTHLY_CREDIT_LIMIT, 0) * 100, 1) AS PCT_OF_LIMIT,
+    CASE
+        WHEN t.TOTAL_CREDITS_MTD >= ac.MONTHLY_CREDIT_LIMIT        THEN 'LIMIT_EXCEEDED'
+        WHEN t.TOTAL_CREDITS_MTD >= ac.MONTHLY_CREDIT_LIMIT * 0.80 THEN 'WARNING_80PCT'
+        WHEN t.TOTAL_CREDITS_MTD >= ac.MONTHLY_CREDIT_LIMIT * 0.50 THEN 'NOTICE_50PCT'
+        ELSE                                                             'OK'
+    END AS THRESHOLD_STATUS,
+    ac.IS_ACTIVE
+FROM user_totals t
+JOIN DBA_MAINT_DB.OVERWATCH.AI_FUNCTIONS_ACCESS_CONTROL ac
+    ON t.USER_NAME = ac.USER_NAME;
+
+--    CMD 3 – Wire Up Proactive Alerts
+REATE OR REPLACE PROCEDURE DBA_MAINT_DB.OVERWATCH.SP_CHECK_AND_ALERT_AI_CREDITS()
+RETURNS VARCHAR
+LANGUAGE SQL
+AS
+$$
+DECLARE
+    alert_count INT DEFAULT 0;
+    v_month     DATE;
+BEGIN
+    v_month := DATE_TRUNC('MONTH', CURRENT_DATE())::DATE;
+
+    FOR rec IN (
+        SELECT USER_NAME, TOTAL_CREDITS_MTD, MONTHLY_CREDIT_LIMIT, THRESHOLD_STATUS
+        FROM DBA_MAINT_DB.OVERWATCH.V_AI_CREDIT_USAGE_MTD
+        WHERE THRESHOLD_STATUS IN ('WARNING_80PCT', 'LIMIT_EXCEEDED')
+          AND IS_ACTIVE = TRUE
+    ) LOOP
+        LET alert_name := rec.USER_NAME || '_' || rec.THRESHOLD_STATUS;
+
+        -- Skip if alert already sent this month
+        IF (SELECT COUNT(1) FROM DBA_MAINT_DB.OVERWATCH.AI_FUNCTIONS_ALERT_STATE
+            WHERE ALERT_NAME = :alert_name AND ALERT_MONTH = :v_month) = 0 THEN
+
+            CALL SYSTEM$SEND_EMAIL(
+                'AI_GOVERNANCE_NOTIFICATIONS',
+                'data-platform-alerts@yourcompany.com',
+                'Cortex AI Credit Alert: ' || rec.USER_NAME || ' — ' || rec.THRESHOLD_STATUS,
+                'User ' || rec.USER_NAME ||
+                ' has consumed ' || ROUND(rec.TOTAL_CREDITS_MTD, 4) ||
+                ' of ' || rec.MONTHLY_CREDIT_LIMIT ||
+                ' monthly credits (' || rec.THRESHOLD_STATUS || ').'
+            );
+
+            INSERT INTO DBA_MAINT_DB.OVERWATCH.AI_FUNCTIONS_ALERT_STATE
+                (ALERT_NAME, ALERT_MONTH, CREDITS_AT_ALERT)
+            VALUES (:alert_name, :v_month, rec.TOTAL_CREDITS_MTD);
+
+            alert_count := alert_count + 1;
+        END IF;
+    END LOOP;
+
+    RETURN 'Alerts sent: ' || alert_count;
+END;
+$$;
+
+-- Schedule it: run every 30 minutes
+CREATE OR REPLACE TASK DBA_MAINT_DB.OVERWATCH.TASK_AI_CREDIT_ALERT
+    WAREHOUSE = UTIL_WH
+    SCHEDULE  = 'USING CRON */30 * * * * UTC'
+AS
+    CALL DBA_MAINT_DB.OVERWATCH.SP_CHECK_AND_ALERT_AI_CREDITS();
+
+ALTER TASK DBA_MAINT_DB.OVERWATCH.TASK_AI_CREDIT_ALERT RESUME;
+
+
+CREATE OR REPLACE PROCEDURE DBA_MAINT_DB.OVERWATCH.SP_ENFORCE_AI_ACCESS_LIMITS()
+RETURNS VARCHAR
+LANGUAGE SQL
+AS
+$$
+DECLARE
+    revoked_count    INT DEFAULT 0;
+    reinstated_count INT DEFAULT 0;
+BEGIN
+    -- REVOKE: users who exceeded limit and still have access
+    FOR rec IN (
+        SELECT USER_NAME
+        FROM DBA_MAINT_DB.OVERWATCH.V_AI_CREDIT_USAGE_MTD
+        WHERE THRESHOLD_STATUS = 'LIMIT_EXCEEDED'
+          AND IS_ACTIVE = TRUE
+    ) LOOP
+        EXECUTE IMMEDIATE 'REVOKE ROLE AI_FUNCTIONS_USER_ROLE FROM USER ' || rec.USER_NAME;
+
+        UPDATE DBA_MAINT_DB.OVERWATCH.AI_FUNCTIONS_ACCESS_CONTROL
+        SET IS_ACTIVE         = FALSE,
+            REVOKED_AT        = CURRENT_TIMESTAMP(),
+            REVOCATION_REASON = 'Monthly credit limit exceeded'
+        WHERE USER_NAME = rec.USER_NAME;
+
+        revoked_count := revoked_count + 1;
+    END LOOP;
+
+    -- REINSTATE: users revoked in a prior month — new month, fresh slate
+    FOR rec IN (
+        SELECT USER_NAME
+        FROM DBA_MAINT_DB.OVERWATCH.AI_FUNCTIONS_ACCESS_CONTROL
+        WHERE IS_ACTIVE = FALSE
+          AND DATE_TRUNC('MONTH', REVOKED_AT) < DATE_TRUNC('MONTH', CURRENT_DATE())
+    ) LOOP
+        EXECUTE IMMEDIATE 'GRANT ROLE AI_FUNCTIONS_USER_ROLE TO USER ' || rec.USER_NAME;
+
+        UPDATE DBA_MAINT_DB.OVERWATCH.AI_FUNCTIONS_ACCESS_CONTROL
+        SET IS_ACTIVE         = TRUE,
+            REVOKED_AT        = NULL,
+            REVOCATION_REASON = NULL
+        WHERE USER_NAME = rec.USER_NAME;
+
+        reinstated_count := reinstated_count + 1;
+    END LOOP;
+
+    RETURN 'Revoked: ' || revoked_count || ' | Reinstated: ' || reinstated_count;
+END;
+$$;
+
+CREATE OR REPLACE TASK DBA_MAINT_DB.OVERWATCH.TASK_AI_ACCESS_ENFORCEMENT
+    WAREHOUSE = UTIL_WH
+    SCHEDULE  = 'USING CRON */30 * * * * UTC'
+AS
+    CALL DBA_MAINT_DB.OVERWATCH.SP_ENFORCE_AI_ACCESS_LIMITS();
+
+ALTER TASK DBA_MAINT_DB.OVERWATCH.TASK_AI_ACCESS_ENFORCEMENT RESUME;
+
+--Skill to build: You need to configure an email integration first via CREATE NOTIFICATION INTEGRATION. Snowflake supports email notifications natively — no SMTP server required.
+
+/*
+Stored Procedures Behind the Agent
+V_AI_CREDIT_USAGE_MTD — Real-time spend visibility
+SP_CHECK_AND_ALERT_AI_CREDITS — Proactive alerting
+SP_ENFORCE_AI_ACCESS_LIMITS — Automated budget enforcement
+AI_FUNCTIONS_ACCESS_CONTROL — Per-user policy registry*/
+
+-- Quick account-wide cost check — paste into your Snowsight dashboard
+SELECT
+    FUNCTION_NAME,
+    MODEL_NAME,
+    ROUND(SUM(CREDITS_USED), 4)    AS TOTAL_CREDITS,
+    SUM(TOTAL_TOKENS)               AS TOTAL_TOKENS,
+    COUNT(DISTINCT USER_NAME)       AS DISTINCT_USERS
+FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_AISQL_USAGE_HISTORY
+WHERE USAGE_DATE >= DATE_TRUNC('MONTH', CURRENT_DATE())
+GROUP BY 1, 2
+ORDER BY TOTAL_CREDITS DESC;
