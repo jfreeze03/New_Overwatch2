@@ -1,0 +1,143 @@
+Features to Take OVERWATCH_CODEX from 93 to 99
+The gap between 93 and 99 isn't about fixing problems — it's about adding capabilities that make this platform genuinely differentiated from anything else available. These features would make a Snowflake SA, a CIO, and an enterprise architect all say "I've never seen this before."
+
+Tier 1 — Highest ROI (93 → 96)
+1. Cortex-Powered Root Cause Narratives
+Where: Query Analysis, DBA Control Room, Alert Center What: When a query fails, spills, or breaches SLA — use SNOWFLAKE.CORTEX.COMPLETE() to generate a 3-sentence root cause explanation grounded in the query profile, operator stats, and warehouse context.
+
+# Example: after loading a slow query's metadata
+narrative_prompt = f"""
+Given this Snowflake query evidence:
+- Elapsed: {elapsed_sec}s, P95 baseline: {baseline_p95}s
+- Remote spill: {spill_gb} GB
+- Warehouse: {wh_name} ({wh_size}), queue time: {queue_sec}s
+- Partitions scanned: {pct_scanned}% of {total_partitions}
+- Query type: {query_type}, database: {database}
+
+In 3 sentences, explain the most likely root cause and the single best next action for a DBA.
+"""
+result = session.sql(f"SELECT SNOWFLAKE.CORTEX.COMPLETE('llama3.1-70b', {sql_literal(narrative_prompt)}) AS explanation").collect()
+Why 99: Transforms the platform from "data display" to "operational intelligence." No other Snowflake monitoring tool generates AI-grounded explanations from live evidence.
+
+2. Predictive Cost Anomaly Detection with Auto-Escalation
+Where: Cost & Contract, Alert Center What: A scheduled Snowflake task runs daily, compares current 7-day burn against a 30-day rolling model (seasonal decomposition via SQL window functions), and auto-creates Alert Center incidents with severity, projected overshoot date, and suggested action.
+
+-- In OVERWATCH_MART_SETUP.sql: scheduled anomaly detection task
+CREATE OR REPLACE TASK OVERWATCH_COST_ANOMALY_DETECT
+  WAREHOUSE = OVERWATCH_WH
+  SCHEDULE = 'USING CRON 0 6 * * * UTC'
+AS
+WITH daily_spend AS (...),
+rolling_model AS (
+  SELECT day, credits,
+    AVG(credits) OVER (ORDER BY day ROWS BETWEEN 30 PRECEDING AND 1 PRECEDING) AS baseline,
+    STDDEV(credits) OVER (ORDER BY day ROWS BETWEEN 30 PRECEDING AND 1 PRECEDING) AS sigma
+  FROM daily_spend
+),
+anomalies AS (
+  SELECT * FROM rolling_model
+  WHERE credits > baseline + 2.5 * sigma
+    AND day = CURRENT_DATE() - 1
+)
+INSERT INTO OVERWATCH_ALERTS (...)
+SELECT ... FROM anomalies;
+Why 99: Proactive detection before humans notice. The platform alerts the DBA rather than waiting for the DBA to open the dashboard.
+
+3. Self-Healing Recommendation Engine
+Where: Recommendations & Action Queue What: For low-risk, high-confidence recommendations (e.g., "increase auto-suspend from 300s to 60s on an idle warehouse"), generate the ALTER SQL, show a dry-run simulation (estimated credit savings based on idle hours), and let the admin execute with one click + confirmation. After execution, auto-create a verification task that checks the warehouse 7 days later and marks the recommendation as "Verified" or "Regressed."
+
+# After admin approves recommendation execution:
+1. Execute ALTER WAREHOUSE ... SET AUTO_SUSPEND = 60;
+2. Write audit trail (already exists)
+3. Create OVERWATCH_VERIFICATION_CHECK row:
+   - entity: warehouse_name
+   - baseline_metric: idle_credits_7d = X
+   - check_after_date: NOW() + 7 days
+   - verification_query: SELECT SUM(credits) FROM metering WHERE start_time >= ...
+4. Scheduled task checks pending verifications daily and auto-closes with evidence
+Why 99: Closes the loop. Most dashboards show problems but never verify fixes. This creates a provable ROI cycle.
+
+Tier 2 — Differentiators (96 → 98)
+4. Release Impact Analysis
+Where: Change & Drift, Workload Operations What: When a DBA annotates a release window (e.g., "Deploy v2.4 at 2pm UTC"), OVERWATCH automatically compares the 4-hour window before and after the release for:
+
+Query duration regression by query signature hash
+New error codes that didn't exist before the release
+Cost increase by warehouse
+Task SLA breaches correlated to the window
+Present this as a "Release Scorecard" with pass/fail per dimension.
+
+Why 99: Directly answers "did this release hurt us?" — the question every engineering org asks but rarely has automated tooling to answer from the database layer.
+
+5. Capacity Forecasting with Confidence Intervals
+Where: Warehouse Health, Cost & Contract What: Use 90-day historical metering to project when each warehouse will exceed its current capacity (based on p95 queue time trending upward). Show:
+
+Days until queue pressure becomes sustained (>5 queries queued for >30s)
+Days until current budget is exhausted at current burn rate
+Confidence interval (67% and 95%)
+-- Linear regression on 90-day p95 queue time
+WITH daily_p95 AS (...),
+regression AS (
+  SELECT REGR_SLOPE(p95_queue_sec, day_number) AS slope,
+         REGR_INTERCEPT(p95_queue_sec, day_number) AS intercept,
+         REGR_R2(p95_queue_sec, day_number) AS r2
+  FROM daily_p95
+)
+-- Project days until p95 crosses threshold
+SELECT (threshold - intercept) / NULLIF(slope, 0) AS days_until_threshold
+Why 99: Shifts from reactive ("warehouse is queuing now") to predictive ("warehouse will queue in 12 days at current trajectory"). Leadership loves time-to-action forecasts.
+
+6. Multi-Account / Org-Level Federation
+Where: New top-level capability What: If ALFA has multiple Snowflake accounts (prod, DR, sandbox), add an org-level summary that pulls from SNOWFLAKE.ORGANIZATION_USAGE views:
+
+Cross-account credit comparison
+Replication lag across accounts
+Contract utilization across all accounts
+DR readiness posture across accounts
+Why 99: Most tools are single-account. Org-level visibility is what separates an enterprise platform from a team dashboard.
+
+7. Incident Timeline with Correlation Engine
+Where: DBA Control Room, Alert Center What: When multiple signals fire at once (e.g., warehouse queue spike + task failure + cost spike all within 15 minutes), automatically correlate them into a single "Incident" with:
+
+Timeline visualization (vertical axis = time, horizontal = signal categories)
+Common root cause hypothesis (same warehouse? same user? same release window?)
+Auto-generated incident summary for Slack/Teams/ServiceNow
+Why 99: Reduces alert fatigue. Instead of 5 separate signals, the DBA sees one correlated incident with context.
+
+Tier 3 — Elite Polish (98 → 99)
+8. Exportable DBA Runbooks as Executable Notebooks
+Where: DBA Control Room, Workload Operations What: Let DBAs save their triage path as a "Runbook" — a sequence of queries + evidence + decisions that can be replayed or handed off. Store as structured JSON in OVERWATCH_RUNBOOK_LOG. When the same pattern recurs, suggest the previous runbook as a starting point.
+
+Why 99: Institutional memory. Junior DBAs can follow the senior DBA's documented path. Knowledge doesn't leave when people do.
+
+9. Real-Time Collaboration Annotations
+Where: All sections What: Any DBA can annotate a chart, metric, or alert with a note that persists in OVERWATCH_ANNOTATIONS. Other DBAs see the annotation inline (e.g., "This spike is expected — marketing campaign launch, approved by @jdees on 2024-06-03"). Already have the table — add inline UI.
+
+Why 99: Turns a single-user dashboard into a team operating surface. Annotations prevent duplicate triage work.
+
+10. Snowflake Native App Packaging
+Where: Deployment architecture What: Package OVERWATCH as a Snowflake Native App so it can be installed from the Snowflake Marketplace or shared via private listing. This means:
+
+Single-click install for new accounts
+Version management via ALTER APPLICATION ... UPGRADE
+Separate provider/consumer model (you ship updates, customers consume them)
+Why 99: The ultimate distribution model. Goes from "internal tool" to "product."
+
+Implementation Priority Matrix
+Feature	Effort	Impact	Score Gain	Order
+Cortex root cause narratives	8h	Very High	+1.5	1st
+Predictive cost anomaly detection	12h	Very High	+1.5	2nd
+Self-healing recommendation engine	16h	High	+1.0	3rd
+Release impact analysis	12h	High	+0.5	4th
+Capacity forecasting	8h	High	+0.5	5th
+Incident correlation engine	16h	Medium	+0.5	6th
+Exportable runbooks	12h	Medium	+0.3	7th
+Real-time annotations UI	6h	Medium	+0.3	8th
+Multi-account federation	20h	High (if applicable)	+0.5	9th
+Native App packaging	40h	Transformative	+0.4	10th
+The Pattern That Gets You to 99
+The common thread across all these features is shifting from reactive display to proactive intelligence:
+
+Current state (93): "Here is what happened. Here is where to look."
+Target state (99): "Here is what happened, here is why, here is what will happen next, and here is what to do about it — verified automatically after you act."
+The dashboard that tells you something is wrong before you open it, explains why with AI-grounded evidence, predicts when it will get worse, suggests the fix with generated SQL, executes the fix with your permission, and verifies the outcome 7 days later — that's a 99.
