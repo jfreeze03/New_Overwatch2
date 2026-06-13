@@ -1,0 +1,396 @@
+I'll gather the complete structure and content of the OVERWATCH_CODEX application systematically. Let me start by exploring the directory structure and then batch-reading all the key files.
+
+Now let me batch-read the main files first, then the sections and utils:
+
+Let me continue reading the truncated files and then gather the sections:
+
+Now let me batch-read key shell files and utility files:
+
+Let me now read a few key section files to understand the pattern:
+
+Now let me read a sample of key utility files to complete the architectural picture:
+
+Let me report progress and then compile the final comprehensive response:
+
+Now I'll provide the comprehensive context to the parent agent:
+
+Now let me read more of the key sections to understand the full picture:
+
+I now have enough context to deliver the comprehensive multi-panel review. Here's my assessment:
+
+---
+
+# OVERWATCH CODEX — Multi-Panel Production Review
+
+---
+
+## 1. Executive Value Assessment
+
+| Section | Rating | Verdict |
+|---------|--------|---------|
+| Executive Landing | High Value | Correctly designed for zero-query first paint, leadership-ready KPIs, PowerPoint export. This is what a CIO opens Monday morning. |
+| DBA Control Room | High Value | Operations board, incident tracking, handoff evidence. The DBA team lives here. |
+| Cost & Contract | High Value | Bill movement, contract pacing, verified savings, budget governance. FinOps and CIOs both need this. |
+| Alert Center | High Value | Issue inbox, triage digest, email delivery proof, automation readiness. Essential for auditors and ops. |
+| Account Health | Medium Value | Morning report and resource monitors serve a purpose, but the KPIs overlap heavily with DBA Control Room. Executives won't visit both. |
+| Workload Operations | Medium Value | Task graphs, query diagnosis, live triage — this is DBA-only territory. Executives don't open this. But the DBA team needs it. |
+| Warehouse Health | Medium Value | Useful for platform engineers; too granular for CIOs unless surfaced as exceptions only. |
+| Architecture Readiness | Medium Value | Impressive governance model, but executives want a one-number readiness score, not a wall of objectives. The DR/isolation/clustering depth is excellent for architects. |
+| Security Posture | High Value | Auditors will demand this. Governance readiness, access hygiene, grant review — essential. |
+| Change & Drift | Medium Value | Valuable for compliance teams; executives don't consume drift evidence directly. |
+
+Missing KPIs leadership would expect:
+- Total cost of ownership trend (not just credits — include storage, serverless, network)
+- Contract utilization percentage (how much of the committed capacity is used)
+- Cost per business unit / cost center allocation
+- SLA compliance percentage (jobs meeting their target runtimes)
+- Time-to-detection for incidents (MTTR/MTTD)
+- Year-over-year cost trajectory with seasonality adjustment
+
+---
+
+## 2. Snowflake Expertise Score: 8.2 / 10
+
+This is a Principal Architect-level project. Here's why:
+
+Signals of high expertise:
+- Tiered caching strategy with `live/recent/historical/metadata` TTLs shows deep understanding of ACCOUNT_USAGE latency vs. INFORMATION_SCHEMA freshness
+- Zero-query shell pattern with deferred workspace loading is production-savvy
+- Company scoping with ILIKE/NOT_ILIKE pattern matching shows multi-tenant operational maturity
+- Resource monitor on the OVERWATCH_WH itself (self-awareness of monitoring cost)
+- OVERWATCH_SCHEMA_MIGRATION table shows deployment discipline
+- Session TTL management (55-min keepalive) shows awareness of Snowflake session recycling
+- SQL injection prevention with safe_sql() 2000-char cap
+- Architecture objectives with RPO/RTO/ownership — this isn't a beginner building dashboards
+- Platform Futures Control Register (Adaptive Compute, Agent/MCP governance, Cortex Sense) shows forward awareness of Snowflake's 2025-2026 roadmap
+- Cost savings verification procedure with post-period measurement
+
+Signals that cap the score below 9:
+- No Dynamic Tables — the mart uses traditional task-based refresh instead of the modern Snowflake primitive
+- No Snowflake Alerts (native) — you have your own alert mechanism but don't leverage EXECUTE ALERT
+- No External Functions or Cortex ML for anomaly detection — the recommendations are rule-based, not ML-driven
+- Query profiling doesn't use GET_QUERY_OPERATOR_STATS for operator-level analysis
+- No Snowpark-optimized workloads — everything is SQL strings in Python
+- The MART_SETUP.sql uses CREATE OR REPLACE for views but doesn't leverage streams for CDC patterns
+
+---
+
+## 3. Production Readiness Review
+
+Performance Bottlenecks (Risk: MEDIUM):
+- Every section shell is zero-query, which is excellent. But when a workspace opens, it can fire 5-15 queries simultaneously with only Streamlit's `st.cache_data` as the backstop. Under concurrent users, you'll hit warehouse queuing.
+- `_estimate_result_mb()` samples 1000 rows for memory estimation on large results. This is a reasonable heuristic but can underestimate when string columns vary widely.
+- The `_QUERY_CACHE_LOCKS` dictionary grows unbounded — there's no eviction strategy for old lock entries.
+
+Expensive Query Patterns (Risk: HIGH):
+- Queries against `SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY` for 30-90 day windows without aggressive filtering will scan millions of rows. The `STANDARD_SQL_READ_LIMIT_ROWS = 5000` limit helps but forces truncation that loses statistical validity.
+- The cost savings verification procedure joins `OVERWATCH_ACTION_QUEUE` against `WAREHOUSE_METERING_HISTORY` — fine for small action queues but won't scale past ~500 open actions.
+
+Caching Opportunities (Risk: MEDIUM):
+- The tiered cache is well-designed. However, cache invalidation on company switch (`invalidate_company_cache()`) nukes everything instead of preserving cross-company-valid metadata like warehouse lists and role definitions.
+- `clear_all_cache()` preserves settings but drops all loaded evidence. A smarter approach: invalidate only sections whose filters changed.
+
+Materialized View / Dynamic Table Opportunities:
+- `FACT_ACCOUNT_HEALTH_OPERABILITY_DAILY` should be a Dynamic Table with a 1-hour target lag instead of a task-refreshed transient table. This eliminates the refresh task, guarantees freshness, and reduces maintenance.
+- The cost savings verification should be a stream + task pattern, not a procedure called on demand.
+
+Security (Risk: MEDIUM):
+- `safe_sql()` is good but the 2000-char cap is arbitrary — legitimate CTEs will exceed this.
+- The `ALTER SESSION SET QUERY_TAG` uses string interpolation (`f"QUERY_TAG = '{_QUERY_TAG}'"`) — safe only because `_QUERY_TAG` is a hardcoded constant. If this ever becomes user-configurable, it's an injection vector.
+- `DEFAULT_ALERT_EMAILS = ("dba-alerts@yourcompany.com",)` is a placeholder. If this ships with this value, alerts go nowhere.
+
+RBAC (Risk: LOW):
+- Role resolution is thoughtful. The `ROLE_PROFILE_OVERRIDES` map is clean. However, the fallback `return "DBA"` for unknown roles means any misconfigured role gets full access. Consider defaulting to the most restrictive profile ("EXECUTIVE" or "ANALYST").
+
+---
+
+## 4. User Experience Review
+
+Layout: B+
+- The shell → workspace pattern is clever and fast. Users see something instantly.
+- However, every shell looks identical: Action Brief card → Operating Snapshot → Workflow Launchpad. This creates visual monotony. After visiting 3 sections, they blur together.
+
+Navigation: B
+- Role-based section filtering with Experience Views is smart.
+- The sidebar is heavy — company selector, environment, date range, warehouse filter, database filter, credit price, theme picker. That's 7+ controls before you see content. Consider progressive disclosure.
+
+Information Density: C+
+- The shells are too sparse. They show 4 metrics (Scope, Window, Rate, Evidence) and 3-6 workflow buttons. No actual data. For a DBA who opens this 20 times a day, the shell is a speed bump, not a dashboard.
+- Once inside a workspace, the density flips — too many metrics, tables, and expanders can overwhelm.
+
+Visual Hierarchy: B
+- The theme system is impressive (5 themes, CSS variables, zero-JS switching).
+- But the card system (`ow-shell-snapshot-card`) makes everything feel equal. There's no visual priority between critical alerts and informational metrics.
+
+Chart Selection: B-
+- Altair horizontal bar charts are the dominant pattern. They work for top-N ranking. But time-series data (cost trends, query volume over time) should use line charts. Sparklines for KPI trends would add executive context without space cost.
+- No heatmaps for time-of-day patterns. No treemaps for cost attribution hierarchy. No gauges for contract utilization.
+
+Dashboard Fatigue: C
+- 10 top-level sections × 6 workflows each = 60 possible views. This is overwhelming. Consolidation is needed.
+- The "More Workflows" button pattern hides functionality that experienced users will never discover.
+
+---
+
+## 5. Feature Gap Analysis
+
+vs. Snowflake Snowsight:
+- Missing: Query Profile operator tree visualization, worksheet collaboration, data preview with sampling
+- You have: Better cost attribution, better multi-company scoping, better alert routing
+
+vs. Datadog/Grafana:
+- Missing: Real-time streaming metrics with sub-minute refresh, alerting rules engine with escalation chains, incident timeline with correlation, service dependency maps
+- You have: Better Snowflake-native depth, better FinOps integration
+
+vs. Power BI/Tableau:
+- Missing: Self-service exploration, drag-and-drop filtering, scheduled report distribution, embedded analytics for external stakeholders
+- You have: Better operational DBA workflow focus
+
+Critical gaps:
+1. No anomaly detection (ML-based). Rule thresholds miss subtle regressions.
+2. No capacity forecasting. You show current state but don't predict when you'll hit contract limits.
+3. No data quality monitoring. No row count drift, freshness SLA tracking for upstream pipelines, or schema change detection.
+4. No data lineage visualization. The architecture objectives reference lineage but there's no visual graph.
+5. No incident correlation. When a spike happens, you can't automatically correlate it with a deploy, a schema change, or a new user workload.
+6. No natural language query. With Cortex already in your dependencies, a "Ask OVERWATCH" interface for ad-hoc questions is a missed opportunity.
+7. No scheduled report delivery (PDF/email digest). Executives want a morning email, not a dashboard visit.
+8. No SLA tracking dashboard. You track task failures but don't show SLA compliance as a first-class metric.
+
+---
+
+## 6. "What Am I Missing?"
+
+Blind spots:
+- Multi-account: This is single-account only. Enterprise Snowflake customers run 5-50 accounts. You need cross-account aggregation.
+- Snowflake Organization billing: The contract is at the org level. Account-level cost views miss the big picture.
+- Network egress costs: You track compute and storage but not data transfer, which can be 10-20% of bills.
+- Marketplace consumption: If ALFA uses Snowflake Marketplace data, those credits are invisible here.
+- Reader accounts: Data sharing costs on provider accounts are a growing expense vector.
+- Tag-based cost allocation: You have owner tags but don't use them for automated chargeback reporting.
+- Compliance: No SOC 2, HIPAA, or PCI evidence collection. If ALFA is in insurance/financial services (the name suggests it), auditors will ask for this.
+- Backup validation: You have DR governance but no automated backup test execution or restore validation.
+
+Hidden assumptions:
+- You assume ACCOUNT_USAGE is always available (45-minute latency). In practice, some views have gaps after Snowflake maintenance.
+- You assume a single credit price. Snowflake contracts often have tiered pricing or multi-rate structures.
+- You assume the OVERWATCH_WH is always available. If someone suspends it or hits the resource monitor limit, the entire dashboard goes dark.
+
+---
+
+## 7. Competitive Review (Snowflake SA Perspective)
+
+Would impress:
+- The Platform Futures Control Register. A SA would be genuinely surprised to see a customer proactively governing Cortex Agents, MCP servers, Cortex Sense, and CoWork Artifacts before they're GA. This signals architectural maturity.
+- The cost savings verification procedure with measured post-period proof. Most customers claim savings without measuring them.
+- The owner directory with escalation targets and SLA contracts. This is enterprise discipline.
+
+Would concern:
+- "Why not use Snowflake's native Cost Management and Budgets instead of building your own?" — You'd need a strong answer for why this is better.
+- "This is 45+ Python files for a Streamlit app. How do you test it? Where's CI/CD?" — There's no test directory in OVERWATCH_CODEX.
+- "Why task-based refresh instead of Dynamic Tables?" — The SA would push you toward the modern primitive.
+- "How does this scale beyond 2 companies?" — The hardcoded ALFA/Trexis config won't work for 10+ business units.
+
+Questions they'd ask:
+- "What's the total credit consumption of OVERWATCH itself per month?"
+- "How do you handle Snowflake maintenance windows that cause ACCOUNT_USAGE gaps?"
+- "Have you considered Snowflake's native Alerts + Notification Integrations instead of custom Python?"
+- "What happens when the app is running and a user hits a 15-second Snowflake cold-start on a suspended warehouse?"
+
+---
+
+## 8. Kill List
+
+- Delete the "Focus" metric from Operating Snapshot cards. "Focus: Design" or "Focus: Jobs" adds zero information.
+- Remove the "More Workflows" / "Hide Workflows" toggle. Show all 6 workflows or show 3. The toggle adds a click and a rerun for marginal value.
+- The `_WORKFLOWS` dictionaries use inconsistent keys (`VIEW`, `WORKFLOW`, `PANE`). Pick one. This isn't user-visible but signals messy internals.
+- Delete the `war_eagle` and `roll_tide` themes. They're fun but signal "personal project" not "enterprise tool." Keep carbon, terminal, and corporate.
+- The `DISPLAY_VERSION`, `THEME_VERSION`, `CONFIG_VERSION` hot-reload guards should not exist in production. These are development-time crutches. Delete them and use proper deployment.
+- The `_lazy_util()` pattern in account_health.py imports 40+ functions by name. This is a maintenance nightmare. Import the module and call `utils.run_query()`.
+- Delete `OverwatchV1` and `OverwatchV2` from the repo before any demo. Legacy code in the same workspace is unprofessional.
+
+---
+
+## 9. Innovation Opportunities
+
+Features that would make this genuinely unique:
+
+1. Cortex-powered "Explain This Spike" — When a cost or runtime anomaly is detected, automatically call Cortex COMPLETE with the surrounding evidence context and generate a plain-English explanation of probable cause.
+
+2. Self-healing playbooks — When a known issue pattern is detected (idle warehouse, failed task, quota breach), auto-generate the fix SQL AND execute it if pre-approved by the owner in the action queue.
+
+3. Predictive contract burn — Use historical credit consumption to forecast the date you'll exhaust contract capacity. Show "68 days remaining at current burn rate" as a first-class KPI.
+
+4. Change impact scoring — When Change & Drift detects a DDL change, score its blast radius (how many queries, users, and pipelines are affected) using ACCESS_HISTORY and OBJECT_DEPENDENCIES.
+
+5. DBA Morning Briefing via Teams/Slack — Instead of opening the dashboard, push a structured brief at 7am with: overnight failures, cost anomalies, SLA misses, and action queue items due today.
+
+6. Workload DNA fingerprinting — Build a statistical fingerprint of normal workload patterns per warehouse/time-of-day. Detect drift from normal without explicit thresholds.
+
+7. Executive "Trust Score" — Single composite number (0-100) that combines cost control, SLA compliance, security posture, and DR readiness into one metric a CIO can track weekly.
+
+---
+
+## 10. Final Verdict
+
+| Category | Score |
+|----------|-------|
+| Overall | 72/100 |
+| Engineering | 78/100 |
+| Architecture | 82/100 |
+| Executive Usefulness | 65/100 |
+| Innovation | 58/100 |
+| Production Readiness | 70/100 |
+
+If presenting to ALFA leadership tomorrow:
+- Add a single composite "Platform Health Score" to the Executive Landing that answers "are we OK?" in one number. Everything else is detail. Right now, the executive has to open a workspace and interpret tables.
+
+If I had 40 additional hours:
+- Build predictive contract burn with visual timeline (8h)
+- Add Cortex-powered anomaly explanation to Cost & Contract (8h)
+- Build scheduled morning brief delivery via email/Teams (8h)
+- Consolidate Account Health into DBA Control Room — they're the same audience (8h)
+- Add test coverage for the core query/cache/session layer (8h)
+
+If I had 200 additional hours:
+- Multi-account support with organization-level billing aggregation
+- ML-based anomaly detection replacing all static thresholds
+- Dynamic Tables replacing task-based mart refresh
+- Full CI/CD pipeline with staging environment
+- Interactive data lineage graph
+- Natural language "Ask OVERWATCH" interface using Cortex
+- SLA compliance dashboard as first-class section
+- Automated chargeback reports with tag-based allocation
+- PDF/PowerPoint scheduled delivery to distribution lists
+
+---
+
+What I genuinely dislike:
+
+The shell pattern is over-engineered for the wrong problem. You solved "fast first paint" perfectly — the page loads instantly. But you created a dashboard where users must click twice to see any actual data. A DBA opening this at 7am doesn't want to read "Open Cost Overview when bill movement, Cortex spend, or contract risk needs proof." They want to see the numbers. The shells feel like a loading screen dressed up as a feature. For executives who visit weekly, the shells are fine. For operators who visit hourly, they're friction.
+
+The 10 sections with 60 workflows create analysis paralysis. This dashboard tries to be everything: an executive briefing tool, an operational control room, a FinOps platform, a security posture monitor, an architecture governance system, AND a DBA triage tool. No single product can serve all these audiences well without becoming a portal nobody loves. The ambition is admirable but the result is sprawl. Pick three sections that are world-class instead of ten that are good.
+
+The configuration is ALFA-specific throughout. Warehouse lists, database patterns, role mappings, company names — all hardcoded. This will never be reusable for another Snowflake customer without a complete rewrite of config.py. If this is only for ALFA, that's fine. But the code pretends to be multi-tenant when it's really single-tenant with a Trexis sidecar.
+
+
+
+changes made in Kiro:
+Now I have the full picture. Let me prioritize the fixes based on the review findings. I'll tackle them in order of impact:
+
+1. Add a Platform Health Score (executive composite metric)
+2. Fix the shell pattern to show real data for returning users
+3. Clean up the role default fallback (security)
+4. Add query cache lock eviction (memory leak)
+5. Remove dev-mode hot-reload guards for production
+
+Let me start implementing:
+
+Now I have the full context. Let me implement the highest-impact fixes:
+
+Now let me fix the query cache lock memory leak:
+
+Now let me fix the cache lock memory leak by adding eviction:
+
+Now fix the security issue — unknown roles defaulting to DBA (full access):
+
+Now let me integrate the Platform Health Score into the Executive Landing shell and the app header:
+
+Now I'll add the health score to the Executive Landing shell:
+
+Now let me register the health_score module in the utils exports:
+
+Now let's add the health score to the app header so it's visible on every page:
+
+Now let's remove the dev-mode hot-reload guards that shouldn't be in production:
+
+Now let's clean up the unused dev helper function:
+
+Now let's make the shell pattern show actual data for returning users (the biggest UX fix). I'll update the DBA Control Room shell since it's the most-visited page:
+
+Now let's normalize the inconsistent workflow key names across shells (the `VIEW`/`WORKFLOW`/`PANE` inconsistency). I'll standardize the alert center and architecture shells to use `WORKFLOW`:
+
+Now fix the references to `row['VIEW']` in alert_center_shell.py:
+
+Now let's do the same for the DBA Control Room shell:
+
+Now let's also standardize the _WORKFLOWS dict keys in dba_control_room_shell.py from `VIEW` to `WORKFLOW`:
+
+Now do the same for architecture readiness shell (PANE → WORKFLOW):
+
+Now let's add the cost contract shell's returning-user evidence display too:
+
+Now let's fix the SQL injection concern with the session QUERY_TAG. Even though it's currently a constant, let's make it safe by design:
+
+Now let's run a quick diagnostic check on the modified files:
+
+All clean. Let me also check the utils/__init__.py and query.py:
+
+All files pass. Here's a summary of what was implemented:
+
+---
+
+**Fixes applied (6 changes across 9 files):**
+
+1. **Platform Health Score** (`utils/health_score.py`) — New composite 0-100 executive KPI visible in the app header on every page and prominently on Executive Landing. Combines cost control (30%), reliability (30%), security (20%), and operational readiness (20%) from loaded session evidence. Gives leadership a single number to track.
+
+2. **Security: Least-privilege role default** (`config.py`) — Unknown Snowflake roles now default to `ANALYST` (read-only navigation) instead of `DBA` (full access). Privileged access requires an explicit match in ROLE_PROFILE_OVERRIDES or recognized naming conventions.
+
+3. **Memory leak fix: Cache lock eviction** (`utils/query.py`) — Added a 256-entry cap with eviction of unlocked entries when the `_QUERY_CACHE_LOCKS` dictionary fills up. Prevents unbounded memory growth in long-running SiS processes.
+
+4. **Shell UX: Returning-user evidence display** (`dba_control_room_shell.py`, `cost_contract_shell.py`) — Shells now surface key metrics (failures, queued, active counts; total credits, estimated cost) from previously loaded evidence so returning users see actual numbers immediately without opening the full workspace.
+
+5. **Production cleanup: Removed dev hot-reload guards** (`app.py`) — Eliminated `CONFIG_VERSION`, `UTILS_EXPORT_VERSION`, `THEME_VERSION`, `SECTION_GUIDANCE_VERSION` reload checks and the `_maybe_reload_dev_helpers()` function. These are development crutches that add latency and shouldn't ship.
+
+6. **Consistency: Standardized workflow keys** (`alert_center_shell.py`, `dba_control_room_shell.py`, `architecture_readiness_shell.py`) — All `_WORKFLOWS` dictionaries now use `WORKFLOW` as the key instead of the inconsistent mix of `VIEW`/`PANE`/`WORKFLOW`. SQL injection surface in session.py also hardened with proper escaping.
+
+Good. Now I'll create a predictive contract burn module — this was identified as a major gap in the review:
+
+Now register the contract forecast in utils exports:
+
+Now let's add the contract burn widget to the Cost & Contract section. I'll integrate it into the cost contract shell so it's immediately visible:
+
+Now let's add the contract burn forecast to the cost contract shell's render function. Let me find the render function:
+
+Now let's add SLA compliance tracking — another major gap identified in the review. This gives executives a first-class "are our jobs meeting targets" metric:
+
+Register SLA tracking in exports:
+
+Now let's add contract configuration to the Settings panel so users can input their contract capacity (this enables the burn forecast):
+
+Now let's add an important missing piece from the review — smarter cache invalidation. Instead of nuking everything on company switch, preserve cross-company metadata:
+
+Good, the metadata cache is already preserved. Now let's improve this function to also preserve cross-company state like the health score and contract info:
+
+Now let's add the "Focus" metric removal from shells (identified in Kill List). The "Focus: Design" / "Focus: Jobs" was called useless. Let me replace it with something actionable — the health score component relevant to that section:
+
+Let me replace "Focus" with "Status" that shows whether the section has loaded data or is standing by — actually useful information:
+
+Now let's run diagnostics on all the modified files:
+
+All clean. Now let me add one more high-impact improvement — the "More Workflows" / "Hide Workflows" toggle removal (Kill List item). Instead, just show all workflows in a compact grid:
+
+Let me apply the same pattern to the executive landing shell:
+
+Let's do the same cleanup for the cost contract shell and DBA control room shell:
+
+Final diagnostic check:
+
+All clean. Here's what was done in this round:
+
+---
+
+**Round 2 — High-impact improvements (7 changes across 14 files):**
+
+1. **Predictive Contract Burn Forecast** (`utils/contract_forecast.py`) — New module that computes days-remaining-at-current-burn-rate, projected exhaustion date, burn trend (accelerating/decelerating/stable), and contract utilization %. Integrated into the Cost & Contract shell so it's visible immediately. Contract capacity is configurable from the Settings panel.
+
+2. **SLA Compliance Tracking** (`utils/sla_tracking.py`) — New module providing task SLA compliance percentage based on historical average duration × multiplier. Answers the exec question "what % of scheduled jobs completed on time?" with per-task and overall compliance scoring.
+
+3. **Contract Capacity Settings** (`app.py`) — Added contract total/remaining credit inputs to the sidebar Settings panel, enabling the burn forecast widget without any SQL queries. Users enter their contract numbers once and the forecast updates with each data load.
+
+4. **Smarter Cache Invalidation** (`utils/company_filter.py`) — Company switches now preserve cross-company state (health score history, contract config, session, connection status, saved views) instead of nuking everything. This eliminates the annoying reconnection flash when toggling between ALFA and Trexis.
+
+5. **Removed "Focus" vanity metrics** (5 shell files) — Deleted the meaningless "Focus: Jobs" / "Focus: Pressure" / "Focus: Design" / "Focus: Approval" / "Focus: Checklist" labels from all Operating Snapshot cards. These wasted a card slot saying nothing useful.
+
+6. **Eliminated More/Hide workflow toggles** (5 shell files) — All workflows now display in a compact 3-column grid immediately. No hidden state, no extra click, no rerun. Users see all 6 workflows at once instead of discovering 3 more behind a button.
+
+7. **Registered new modules** (`utils/__init__.py`) — Both `contract_forecast` and `sla_tracking` are available via the lazy import system so any section can `from utils import build_task_sla_compliance_sql, render_contract_burn_widget`.
