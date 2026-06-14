@@ -1,0 +1,847 @@
+
+Workspaces
+Databases
+OVERWATCH: Plan to Score 95+ in All Dimensions
+Target: Move from 69/100 overall to 95+ across all six scoring dimensions.
+
+Current Scores:
+
+Dimension	Current	Target	Gap
+Engineering	72	95	-23
+Architecture	68	95	-27
+Executive Usefulness	62	95	-33
+Innovation	55	95	-40
+Production Readiness	67	95	-28
+Test Coverage	60	95	-35
+PHASE 1: Structural Surgery (Engineering + Architecture)
+Goal: Reduce complexity, consolidate sections, enforce modularity.
+
+1.1 — Refactor Mega-Files into Module Packages
+Problem: 6 files exceed 3,000 lines. Unmaintainable.
+
+Instructions for AI:
+
+Convert sections/dba_control_room.py (6,844 lines) into a package:
+
+sections/dba_control_room/
+  __init__.py          → exports render(), DBA_CONTROL_ROOM_PANES
+  _fast_watch.py       → Fast Watch pane rendering
+  _morning_brief.py    → Morning Brief pane rendering
+  _operations_board.py → Operations Board rendering
+  _triage.py           → Triage pane
+  _drill_routes.py     → Drill Routes pane
+  _release_gate.py     → Release Gate pane
+  _source_health.py    → Source Health pane
+  _executive_evidence.py → Executive Evidence pane
+  _release_compare.py  → Release Compare pane
+  _helpers.py          → Shared helpers (scope meta, lazy imports, jump logic)
+Each sub-module should be <500 lines. The __init__.py dispatches to sub-modules based on active pane.
+
+Same pattern for:
+
+sections/cost_contract.py (5,808 lines) → sections/cost_contract/ package with one file per workflow
+sections/warehouse_health.py (4,226 lines) → sections/warehouse_health/ package with one file per view
+sections/account_health.py (3,941 lines) → sections/account_health/ package
+sections/security_posture.py (3,324 lines) → sections/security_posture/ package
+sections/alert_center.py (2,981 lines) → sections/alert_center/ package
+sections/change_drift.py (2,918 lines) → sections/change_drift/ package
+Rule: No single .py file exceeds 500 lines. Extract helper functions, SQL builders, and rendering logic into separate files within the package.
+
+Each package __init__.py must expose ONLY:
+
+from ._dispatch import render
+from ._constants import PANES, PANE_LABELS, VIEW_DETAILS
+1.2 — Consolidate Navigation: 45 Sections → 8 Top-Level Sections
+Problem: 45 section files / 15+ nav entries is cognitive overload.
+
+Instructions for AI:
+
+Define new NAV_GROUPS in config.py:
+
+NAV_GROUPS = {
+    "Command Center": ["Executive Landing", "DBA Control Room", "Alert Center"],
+    "Financial Control": ["Cost & Contract"],  # absorbs FinOps, Budget, Cortex, SPCS, Data Sharing, Value
+    "Operations": ["Workload Operations", "Warehouse Health"],
+    "Governance": ["Governance & Security", "Architecture Readiness"],
+}
+Merge into Cost & Contract (as sub-workflows, not separate sections):
+
+finops_control.py → becomes "FinOps" workflow inside Cost & Contract
+budget_governance.py → becomes "Budget Governance" workflow inside Cost & Contract
+cortex_monitor.py → becomes "AI & Cortex" workflow inside Cost & Contract
+spcs_tracker.py → becomes "Container Services" workflow inside Cost & Contract
+data_sharing.py → becomes "Data Transfer" workflow inside Cost & Contract
+snowflake_value.py → becomes "Value & Savings" workflow inside Cost & Contract
+Delete entirely (move one key metric into Executive Landing):
+
+adoption_analytics.py → add ACTIVE_USERS_7D to Executive Landing mart
+platform_topology.py → delete until lineage is implemented
+Update SECTION_MODULES in config.py to remove deleted sections.
+
+Update all _jump() calls and apply_navigation_state() references to use new section names.
+
+1.3 — Eliminate Duplicated Helper Functions
+Problem: get_active_company(), freshness_note(), metric_confidence_label(), render_operator_briefing() are copy-pasted in 8+ files.
+
+Instructions for AI:
+
+Grep all section files for these function definitions:
+
+def get_active_company
+def get_active_environment
+def freshness_note
+def metric_confidence_label
+def render_operator_briefing
+def get_credit_price
+Keep ONLY the canonical version in utils/:
+
+get_active_company → utils/company_filter.py (already there)
+get_active_environment → utils/company_filter.py
+freshness_note → utils/section_guidance.py
+metric_confidence_label → utils/section_guidance.py
+render_operator_briefing → utils/workflows.py
+get_credit_price → utils/cost.py
+In each section file, replace the local definition with an import from the canonical location.
+
+Add to utils/__init__.py exports so existing from utils import get_active_company still works.
+
+1.4 — Remove Internal Project Management from Production Code
+Problem: "God Tier" naming, self-congratulatory scores, Summit Capabilities in UI.
+
+Instructions for AI:
+
+Rename in utils/operational_intelligence.py:
+
+GOD_TIER_CAPABILITY_VERSION → COMMAND_INTELLIGENCE_VERSION
+build_god_tier_capability_rows() → build_capability_register_rows()
+build_god_tier_setup_bundle_sql() → build_capability_setup_sql()
+All references to "god tier" → "command intelligence" or "capability register"
+In utils/scorecards.py, replace DBA_CONTROL_PLANE_SECTION_BASELINE scores with honest values. Use this rule:
+
+If a section has no integration tests → tests_operability ≤ 60
+If a section has no DMF/data-quality checks → data_correctness ≤ 75
+If a section requires ACCOUNTADMIN → admin_safety_audit ≤ 70
+If a section has >2000 lines in one file → workflow_ux ≤ 70
+If a section has no owner routing → governance_ownership ≤ 70
+Minimum honest baseline: most sections should score 60-80, not 95-100
+In sections/budget_governance.py:
+
+Move SUMMIT_CAPABILITIES tuple to docs/SUMMIT_CAPABILITIES.md
+Remove the Summit Capabilities rendering from render() function
+Keep only the operational budget/quota/action controls in the production UI
+In sections/architecture_readiness.py:
+
+Move build_agentic_ai_surface_scorecard, build_platform_futures_adoption_gate, build_platform_futures_board behind an admin-mode check:
+if st.session_state.get("_admin_mode_enabled"):
+    # render futures boards
+Delete from repository root:
+
+OVERWATCH_PROCESS_FOR_16_YEAR_OLD.md
+OVERWATCH_PROCESS_FOR_GAME_OF_THRONES_FANS.md
+PHASE 2: Production Readiness + Security
+Goal: Eliminate security risks, add RBAC, implement proper caching, enforce refresh SLAs.
+
+2.1 — Create a Dedicated Monitoring Role (Replace ACCOUNTADMIN)
+Instructions for AI:
+
+Create snowflake/OVERWATCH_ROLE_SETUP.sql:
+
+CREATE ROLE IF NOT EXISTS OVERWATCH_MONITOR;
+
+-- Grant read-only access to account usage
+GRANT IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE TO ROLE OVERWATCH_MONITOR;
+
+-- Grant usage on OVERWATCH objects
+GRANT USAGE ON DATABASE DBA_MAINT_DB TO ROLE OVERWATCH_MONITOR;
+GRANT USAGE ON SCHEMA DBA_MAINT_DB.OVERWATCH TO ROLE OVERWATCH_MONITOR;
+GRANT SELECT ON ALL TABLES IN SCHEMA DBA_MAINT_DB.OVERWATCH TO ROLE OVERWATCH_MONITOR;
+GRANT SELECT ON ALL VIEWS IN SCHEMA DBA_MAINT_DB.OVERWATCH TO ROLE OVERWATCH_MONITOR;
+GRANT SELECT ON FUTURE TABLES IN SCHEMA DBA_MAINT_DB.OVERWATCH TO ROLE OVERWATCH_MONITOR;
+GRANT SELECT ON FUTURE VIEWS IN SCHEMA DBA_MAINT_DB.OVERWATCH TO ROLE OVERWATCH_MONITOR;
+
+-- Grant warehouse usage
+GRANT USAGE ON WAREHOUSE OVERWATCH_WH TO ROLE OVERWATCH_MONITOR;
+
+-- Grant MONITOR on account for SHOW commands
+GRANT MONITOR ON ACCOUNT TO ROLE OVERWATCH_MONITOR;
+
+-- For DBA actions (write to action queue, alert tables)
+CREATE ROLE IF NOT EXISTS OVERWATCH_OPERATOR;
+GRANT ROLE OVERWATCH_MONITOR TO ROLE OVERWATCH_OPERATOR;
+GRANT INSERT, UPDATE ON ALL TABLES IN SCHEMA DBA_MAINT_DB.OVERWATCH TO ROLE OVERWATCH_OPERATOR;
+
+-- Grant to app service user
+GRANT ROLE OVERWATCH_MONITOR TO USER OVERWATCH_APP;
+Update utils/session.py to validate the session role is not ACCOUNTADMIN and warn if it is:
+
+def _validate_role(session):
+    role = session.sql("SELECT CURRENT_ROLE()").collect()[0][0]
+    if role == "ACCOUNTADMIN":
+        st.warning("OVERWATCH is running as ACCOUNTADMIN. Use OVERWATCH_MONITOR for read-only or OVERWATCH_OPERATOR for write operations.")
+    return role
+Update README and deployment docs to specify OVERWATCH_MONITOR as the required role.
+
+2.2 — Replace unsafe_allow_html=True with Streamlit Native Components
+Instructions for AI:
+
+In sections/shell_helpers.py, replace ALL st.markdown(..., unsafe_allow_html=True) patterns:
+
+For KPI grids, replace with st.columns + st.metric:
+
+def render_shell_kpi_row(items):
+    cols = st.columns(len(items))
+    for col, (label, value) in zip(cols, items):
+        with col:
+            st.metric(label=label, value=value)
+For status strips, replace with st.status or st.container with styled st.caption:
+
+def render_shell_status_strip(state, headline, detail):
+    with st.container(border=True):
+        c1, c2 = st.columns([3, 1])
+        with c1:
+            st.markdown(f"**{headline}**")
+            st.caption(detail)
+        with c2:
+            st.badge(state)
+For snapshot grids, use st.columns with st.container(border=True):
+
+def render_shell_snapshot(items, columns=4):
+    cols = st.columns(columns)
+    for i, (label, value) in enumerate(items):
+        with cols[i % columns]:
+            with st.container(border=True):
+                st.caption(label)
+                st.markdown(f"**{value}**")
+Remove all _SNAPSHOT_GRID_STYLE, _SNAPSHOT_CARD_STYLE, etc. CSS constants once replaced.
+
+Keep unsafe_allow_html=True ONLY for the theme picker color swatches (cosmetic, no user data).
+
+2.3 — Implement @st.cache_data for All Historical Queries
+Instructions for AI:
+
+In utils/query.py, modify run_query() to use @st.cache_data when the tier parameter is "historical":
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_historical_query(sql: str, salt: str) -> pd.DataFrame:
+    session = _get_raw_session()
+    return session.sql(sql).to_pandas()
+
+def run_query(sql, *, ttl_key="", tier="standard", section="", **kwargs):
+    if tier == "historical":
+        salt = st.session_state.get("_refresh_salt_global", "")
+        return _cached_historical_query(sql, salt)
+    # ... existing logic for live/standard tiers
+Historical tier queries (mart reads, 7d+ aggregates) get cached for 1 hour.
+
+Standard tier queries (cost lookups, recent data) get cached for 5 minutes.
+
+Live tier queries (INFORMATION_SCHEMA, SHOW commands) are never cached.
+
+Remove all st.session_state["df_some_data"] = result patterns and replace with direct run_query() calls using appropriate tiers.
+
+2.4 — Implement Refresh Policy Enforcement
+Instructions for AI:
+
+Create snowflake/OVERWATCH_FRESHNESS_ALERT.sql:
+
+CREATE OR REPLACE ALERT DBA_MAINT_DB.OVERWATCH.OVERWATCH_FRESHNESS_ALERT
+  WAREHOUSE = OVERWATCH_WH
+  SCHEDULE = 'USING CRON 0 * * * * America/New_York'
+  IF (EXISTS (
+    SELECT 1
+    FROM DBA_MAINT_DB.OVERWATCH.OVERWATCH_REFRESH_POLICY p
+    LEFT JOIN (
+      SELECT query_tag, MAX(start_time) AS last_refresh
+      FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
+      WHERE query_tag LIKE 'OVERWATCH|section=%'
+        AND start_time >= DATEADD('day', -1, CURRENT_TIMESTAMP())
+      GROUP BY query_tag
+    ) q ON q.query_tag LIKE '%section=' || p.SURFACE || '%'
+    WHERE p.TARGET_FRESHNESS_MIN IS NOT NULL
+      AND DATEDIFF('minute', COALESCE(q.last_refresh, '2000-01-01'), CURRENT_TIMESTAMP())
+          > p.TARGET_FRESHNESS_MIN * 2
+  ))
+  THEN
+    CALL SYSTEM$SEND_EMAIL(
+      'OVERWATCH_EMAIL_INT',
+      'dba-alerts@yourcompany.com',
+      'OVERWATCH Mart Freshness SLA Breach',
+      'One or more OVERWATCH mart surfaces have exceeded their target freshness SLA. Check OVERWATCH_REFRESH_POLICY for details.'
+    );
+In the app, add a "Refresh Health" indicator to Account Health section that queries OVERWATCH_REFRESH_POLICY joined to actual task run times to show which surfaces are stale.
+
+2.5 — Parameterize Critical SQL Queries
+Instructions for AI:
+
+For all SQL that includes user-supplied filter values (warehouse name, user name, role name, database name), convert from f-string to Snowpark parameterized queries:
+
+# BEFORE (vulnerable):
+sql = f"SELECT * FROM table WHERE warehouse_name = {sql_literal(wh_name)}"
+session.sql(sql).to_pandas()
+
+# AFTER (safe):
+sql = "SELECT * FROM table WHERE warehouse_name = ?"
+session.sql(sql, params=[wh_name]).to_pandas()
+Keep sql_literal() only for cases where parameterization isn't possible (dynamic column names, CASE expressions in CTEs). Document each usage with a comment explaining why parameterization can't be used.
+
+Create utils/sql_builder.py with a SafeQuery class:
+
+class SafeQuery:
+    def __init__(self, template: str):
+        self.template = template
+        self.params = []
+    
+    def bind(self, value) -> 'SafeQuery':
+        self.params.append(value)
+        return self
+    
+    def execute(self, session) -> pd.DataFrame:
+        return session.sql(self.template, params=self.params).to_pandas()
+PHASE 3: Executive Usefulness
+Goal: Make every screen answer a business question in <5 seconds.
+
+3.1 — Redesign Executive Landing as a Single-Screen Decision Page
+Instructions for AI:
+
+Executive Landing must show EXACTLY these 6 KPIs above the fold (no scrolling):
+
+Total Spend vs Budget (this month, % of budget consumed, trend arrow)
+Daily Burn Rate (today vs 7d average, anomaly flag)
+Open Critical/High Alerts (count, oldest age)
+Pipeline SLA Compliance (% of tables meeting freshness target)
+Platform Health Score (weighted composite 0-100)
+Active Issues in Queue (count by severity)
+Below the fold: one chart (7-day spend trend) and one table (top 5 action items with owner + due date).
+
+Remove ALL other content from Executive Landing. No workflows, no evidence mode, no drill-through. This page is a GLANCE page.
+
+Add a "Copy Executive Summary" button that generates 3 sentences:
+
+"Snowflake spend is at $X of $Y budget (Z%). 
+N critical alerts are open, oldest is Xh. 
+Pipeline SLA compliance is X%; platform health score is X/100."
+3.2 — Add Pipeline SLA Compliance Metric
+Instructions for AI:
+
+Create snowflake/OVERWATCH_PIPELINE_SLA.sql:
+
+CREATE TABLE IF NOT EXISTS DBA_MAINT_DB.OVERWATCH.OVERWATCH_PIPELINE_SLA (
+  DATABASE_NAME VARCHAR(256),
+  SCHEMA_NAME VARCHAR(256),
+  TABLE_NAME VARCHAR(256),
+  SLA_FRESHNESS_HOURS NUMBER(10,2) NOT NULL DEFAULT 24,
+  OWNER VARCHAR(256),
+  COMPANY VARCHAR(50),
+  ENABLED BOOLEAN DEFAULT TRUE,
+  CREATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+);
+Create a view that computes compliance:
+
+CREATE OR REPLACE VIEW DBA_MAINT_DB.OVERWATCH.OVERWATCH_PIPELINE_SLA_STATUS_V AS
+SELECT
+  s.DATABASE_NAME, s.SCHEMA_NAME, s.TABLE_NAME,
+  s.SLA_FRESHNESS_HOURS,
+  s.OWNER,
+  s.COMPANY,
+  t.LAST_ALTERED,
+  DATEDIFF('hour', t.LAST_ALTERED, CURRENT_TIMESTAMP()) AS HOURS_SINCE_CHANGE,
+  IFF(HOURS_SINCE_CHANGE <= s.SLA_FRESHNESS_HOURS, 'MET', 'BREACHED') AS SLA_STATUS
+FROM DBA_MAINT_DB.OVERWATCH.OVERWATCH_PIPELINE_SLA s
+JOIN SNOWFLAKE.ACCOUNT_USAGE.TABLES t
+  ON t.TABLE_CATALOG = s.DATABASE_NAME
+  AND t.TABLE_SCHEMA = s.SCHEMA_NAME
+  AND t.TABLE_NAME = s.TABLE_NAME
+  AND t.DELETED IS NULL
+WHERE s.ENABLED = TRUE;
+Add SLA compliance % to MART_EXECUTIVE_OBSERVABILITY refresh task.
+
+3.3 — Add Scheduled Executive Email Digest
+Instructions for AI:
+
+Create snowflake/OVERWATCH_EXECUTIVE_DIGEST.sql:
+CREATE OR REPLACE PROCEDURE DBA_MAINT_DB.OVERWATCH.SP_EXECUTIVE_DIGEST()
+RETURNS VARCHAR
+LANGUAGE SQL
+AS
+$$
+DECLARE
+  total_spend FLOAT;
+  budget FLOAT;
+  critical_alerts INT;
+  sla_pct FLOAT;
+  health_score INT;
+  body VARCHAR;
+BEGIN
+  -- Gather metrics from mart
+  SELECT SUM(DAILY_CREDITS) * 3.68 INTO :total_spend
+  FROM DBA_MAINT_DB.OVERWATCH.FACT_COST_DAILY
+  WHERE USAGE_DATE >= DATE_TRUNC('month', CURRENT_DATE());
+  
+  SET budget = 50000.00;  -- from OVERWATCH_SETTINGS
+  
+  SELECT COUNT(*) INTO :critical_alerts
+  FROM DBA_MAINT_DB.OVERWATCH.ALERT_EVENTS
+  WHERE SEVERITY IN ('CRITICAL','HIGH') AND STATUS = 'OPEN';
+  
+  SELECT ROUND(COUNT_IF(SLA_STATUS='MET') * 100.0 / NULLIF(COUNT(*),0), 1) INTO :sla_pct
+  FROM DBA_MAINT_DB.OVERWATCH.OVERWATCH_PIPELINE_SLA_STATUS_V;
+  
+  SET body = 'OVERWATCH Daily Digest\n\n' ||
+    'MTD Spend: $' || TO_VARCHAR(:total_spend, '999,999.00') || ' of $' || TO_VARCHAR(:budget, '999,999.00') || '\n' ||
+    'Open Critical/High Alerts: ' || :critical_alerts || '\n' ||
+    'Pipeline SLA Compliance: ' || :sla_pct || '%\n';
+  
+  CALL SYSTEM$SEND_EMAIL('OVERWATCH_EMAIL_INT', 'leadership@yourcompany.com', 'OVERWATCH Daily Digest', :body);
+  RETURN 'Digest sent';
+END;
+$$;
+
+CREATE OR REPLACE TASK DBA_MAINT_DB.OVERWATCH.TASK_EXECUTIVE_DIGEST
+  WAREHOUSE = OVERWATCH_WH
+  SCHEDULE = 'USING CRON 0 7 * * 1-5 America/New_York'
+AS
+  CALL DBA_MAINT_DB.OVERWATCH.SP_EXECUTIVE_DIGEST();
+3.4 — Add Platform Availability / Uptime Metric
+Instructions for AI:
+
+Define "platform available" = OVERWATCH_WH can execute a SELECT 1 AND mart tables are fresh within policy.
+
+Create a task that runs every 5 minutes and logs availability:
+
+CREATE TABLE IF NOT EXISTS DBA_MAINT_DB.OVERWATCH.OVERWATCH_AVAILABILITY_LOG (
+  CHECK_TIME TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+  WH_AVAILABLE BOOLEAN,
+  MART_FRESH BOOLEAN,
+  SESSION_LATENCY_MS NUMBER,
+  CHECK_STATUS VARCHAR(20)  -- 'AVAILABLE', 'DEGRADED', 'DOWN'
+);
+Compute uptime % from this log for Executive Landing display.
+
+PHASE 4: Innovation
+Goal: Implement genuinely differentiated capabilities that competitors don't have.
+
+4.1 — Snowflake Native ALERT Object Management
+Instructions for AI:
+
+Create sections/alert_center/_native_alerts.py that can:
+
+List all ALERT objects: SHOW ALERTS IN ACCOUNT
+Show alert schedule, condition, action for each
+Display alert history: SELECT * FROM SNOWFLAKE.ACCOUNT_USAGE.ALERT_HISTORY
+Generate CREATE/ALTER ALERT DDL from UI inputs
+Show which alerts are enabled/disabled/suspended
+UI: Add "Native Alerts" pane to Alert Center that shows:
+
+Table of all Snowflake ALERT objects with status
+Last trigger time, trigger count (7d)
+"Create Alert" form that generates DDL (user copies and executes)
+"Alert Health" showing alerts that haven't triggered when expected
+4.2 — Data Metric Function (DMF) Integration
+Instructions for AI:
+
+Create sections/data_quality/ package:
+
+sections/data_quality/
+  __init__.py
+  _dmf_dashboard.py    → shows DMF results from SNOWFLAKE.LOCAL.DATA_QUALITY_MONITORING_RESULTS
+  _quality_score.py    → computes aggregate quality score per database/schema
+  _sla_integration.py  → ties DMF failures to pipeline SLA breaches
+Query DMF results:
+
+SELECT
+  METRIC_DATABASE, METRIC_SCHEMA, METRIC_NAME,
+  TABLE_DATABASE, TABLE_SCHEMA, TABLE_NAME, TABLE_COLUMN,
+  MEASUREMENT_TIME, VALUE,
+  IFF(VALUE > 0, 'FAIL', 'PASS') AS STATUS
+FROM SNOWFLAKE.LOCAL.DATA_QUALITY_MONITORING_RESULTS
+WHERE MEASUREMENT_TIME >= DATEADD('day', -7, CURRENT_TIMESTAMP())
+ORDER BY MEASUREMENT_TIME DESC;
+Compute aggregate data quality score:
+
+QUALITY_SCORE = (PASS_COUNT / TOTAL_COUNT) * 100
+Surface this on Executive Landing.
+
+Add to nav under "Operations" group.
+
+4.3 — Incident Correlation Engine
+Instructions for AI:
+
+Create utils/incident_correlation.py:
+
+def correlate_incidents(timeframe_hours: int = 4) -> list[dict]:
+    """Find events that co-occur within a time window across domains."""
+    # Query all signal sources within the window:
+    # - Cost spikes (WAREHOUSE_METERING_HISTORY)
+    # - Failed queries (QUERY_HISTORY)
+    # - Failed tasks (TASK_HISTORY)
+    # - Failed logins (LOGIN_HISTORY)
+    # - Schema changes (ACCESS_HISTORY + OBJECT_CHANGE_HISTORY)
+    # - Alert triggers (ALERT_EVENTS)
+    #
+    # Correlate by time proximity and shared attributes (warehouse, database, user, role)
+    # Return ranked incidents with shared root cause hypothesis
+SQL for correlation:
+
+WITH events AS (
+  SELECT 'COST_SPIKE' AS domain, warehouse_name AS entity, start_time AS event_time, credits_used AS magnitude
+  FROM SNOWFLAKE.ACCOUNT_USAGE.WAREHOUSE_METERING_HISTORY
+  WHERE credits_used > (SELECT AVG(credits_used) * 2 FROM ... WHERE ...)
+    AND start_time >= DATEADD('hour', -:window, CURRENT_TIMESTAMP())
+  UNION ALL
+  SELECT 'QUERY_FAILURE', warehouse_name, start_time, total_elapsed_time
+  FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
+  WHERE execution_status = 'FAIL' AND start_time >= DATEADD('hour', -:window, CURRENT_TIMESTAMP())
+  UNION ALL
+  SELECT 'TASK_FAILURE', database_name || '.' || name, scheduled_time, 1
+  FROM SNOWFLAKE.ACCOUNT_USAGE.TASK_HISTORY
+  WHERE state = 'FAILED' AND scheduled_time >= DATEADD('hour', -:window, CURRENT_TIMESTAMP())
+  UNION ALL
+  SELECT 'LOGIN_FAILURE', user_name, event_timestamp, 1
+  FROM SNOWFLAKE.ACCOUNT_USAGE.LOGIN_HISTORY
+  WHERE is_success = 'NO' AND event_timestamp >= DATEADD('hour', -:window, CURRENT_TIMESTAMP())
+)
+SELECT
+  DATE_TRUNC('hour', event_time) AS incident_hour,
+  ARRAY_AGG(DISTINCT domain) AS involved_domains,
+  ARRAY_AGG(DISTINCT entity) AS involved_entities,
+  COUNT(*) AS event_count,
+  COUNT(DISTINCT domain) AS domain_count
+FROM events
+GROUP BY incident_hour
+HAVING domain_count >= 2
+ORDER BY event_count DESC;
+Surface in DBA Control Room as "Correlated Incidents" table showing multi-domain events.
+
+4.4 — Tag-Based Cost Allocation (Replace Hardcoded Company Logic)
+Instructions for AI:
+
+Create snowflake/OVERWATCH_TAG_SETUP.sql:
+
+CREATE TAG IF NOT EXISTS DBA_MAINT_DB.OVERWATCH.COST_CENTER
+  ALLOWED_VALUES 'ALFA', 'Trexis', 'Shared';
+
+CREATE TAG IF NOT EXISTS DBA_MAINT_DB.OVERWATCH.ENVIRONMENT
+  ALLOWED_VALUES 'PROD', 'DEV', 'SIT', 'SANDBOX', 'SHARED';
+
+CREATE TAG IF NOT EXISTS DBA_MAINT_DB.OVERWATCH.WORKLOAD_CLASS
+  ALLOWED_VALUES 'ETL', 'ANALYTICS', 'REPORTING', 'ADMIN', 'APP', 'AI';
+
+-- Apply to warehouses
+ALTER WAREHOUSE WH_TRXS_LOAD SET TAG DBA_MAINT_DB.OVERWATCH.COST_CENTER = 'Trexis';
+ALTER WAREHOUSE WH_TRXS_QUERY SET TAG DBA_MAINT_DB.OVERWATCH.COST_CENTER = 'Trexis';
+ALTER WAREHOUSE WH_TRXS_TRANSFORM SET TAG DBA_MAINT_DB.OVERWATCH.COST_CENTER = 'Trexis';
+ALTER WAREHOUSE WH_TRXS_UNLOAD SET TAG DBA_MAINT_DB.OVERWATCH.COST_CENTER = 'Trexis';
+ALTER WAREHOUSE WH_ALFA_LOAD SET TAG DBA_MAINT_DB.OVERWATCH.COST_CENTER = 'ALFA';
+-- ... etc for all warehouses
+
+-- Apply to databases
+ALTER DATABASE TRXS_EDW_PRD SET TAG DBA_MAINT_DB.OVERWATCH.COST_CENTER = 'Trexis';
+ALTER DATABASE ALFA_EDW_PROD SET TAG DBA_MAINT_DB.OVERWATCH.COST_CENTER = 'ALFA';
+-- ... etc
+Create a tag reference materialization task:
+
+CREATE OR REPLACE TABLE DBA_MAINT_DB.OVERWATCH.OVERWATCH_TAG_MAP AS
+SELECT
+  TAG_NAME, TAG_VALUE, OBJECT_DATABASE, OBJECT_SCHEMA, OBJECT_NAME, DOMAIN
+FROM SNOWFLAKE.ACCOUNT_USAGE.TAG_REFERENCES
+WHERE TAG_DATABASE = 'DBA_MAINT_DB' AND TAG_SCHEMA = 'OVERWATCH'
+  AND TAG_NAME IN ('COST_CENTER', 'ENVIRONMENT', 'WORKLOAD_CLASS');
+Modify utils/company_filter.py get_company_case_expr() to read from tag map:
+
+def get_company_case_expr(wh_col="warehouse_name", db_col="database_name"):
+    # Try tag map first, fall back to naming convention
+    return f"""
+    COALESCE(
+      (SELECT tag_value FROM DBA_MAINT_DB.OVERWATCH.OVERWATCH_TAG_MAP
+       WHERE DOMAIN='WAREHOUSE' AND OBJECT_NAME = {wh_col} AND TAG_NAME='COST_CENTER'),
+      CASE
+        WHEN {wh_col} IN ('WH_TRXS_LOAD','WH_TRXS_QUERY','WH_TRXS_TRANSFORM','WH_TRXS_UNLOAD') THEN 'Trexis'
+        WHEN {db_col} LIKE 'TRXS_%' THEN 'Trexis'
+        ELSE 'ALFA'
+      END
+    )
+    """
+Eventually remove all TREXIS_WAREHOUSES, ALFA_WAREHOUSES constants from config.py once tag coverage is 100%.
+
+4.5 — Predictive SLA Breach Detection
+Instructions for AI:
+
+Create utils/predictive_sla.py:
+
+def build_predictive_sla_sql(days_history: int = 30) -> str:
+    return f"""
+    WITH freshness_history AS (
+      SELECT
+        TABLE_CATALOG AS database_name,
+        TABLE_SCHEMA AS schema_name,
+        TABLE_NAME AS table_name,
+        DATE_TRUNC('day', LAST_ALTERED) AS altered_date,
+        DATEDIFF('hour', LAG(LAST_ALTERED) OVER (
+          PARTITION BY TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME ORDER BY LAST_ALTERED
+        ), LAST_ALTERED) AS refresh_interval_hours
+      FROM SNOWFLAKE.ACCOUNT_USAGE.TABLES
+      WHERE LAST_ALTERED >= DATEADD('day', -{days_history}, CURRENT_TIMESTAMP())
+        AND DELETED IS NULL
+    ),
+    stats AS (
+      SELECT
+        database_name, schema_name, table_name,
+        AVG(refresh_interval_hours) AS avg_interval,
+        STDDEV(refresh_interval_hours) AS stddev_interval,
+        MAX(refresh_interval_hours) AS max_interval,
+        COUNT(*) AS refresh_count
+      FROM freshness_history
+      WHERE refresh_interval_hours IS NOT NULL
+      GROUP BY 1, 2, 3
+      HAVING refresh_count >= 5
+    )
+    SELECT
+      s.*, p.SLA_FRESHNESS_HOURS,
+      ROUND(s.avg_interval + 2 * s.stddev_interval, 1) AS predicted_worst_case_hours,
+      IFF(predicted_worst_case_hours > p.SLA_FRESHNESS_HOURS, 'AT RISK', 'SAFE') AS tomorrow_risk
+    FROM stats s
+    JOIN DBA_MAINT_DB.OVERWATCH.OVERWATCH_PIPELINE_SLA p
+      ON p.DATABASE_NAME = s.database_name
+      AND p.SCHEMA_NAME = s.schema_name
+      AND p.TABLE_NAME = s.table_name
+    WHERE tomorrow_risk = 'AT RISK'
+    ORDER BY (predicted_worst_case_hours - p.SLA_FRESHNESS_HOURS) DESC;
+    """
+Surface "At Risk Tomorrow" count on Executive Landing and Pipeline Health.
+
+4.6 — OVERWATCH Self-Health Section
+Instructions for AI:
+
+Create sections/self_health.py that shows:
+
+OVERWATCH query cost by section (from query tags)
+OVERWATCH query count and latency P95 by section
+Mart freshness vs policy target (from OVERWATCH_REFRESH_POLICY)
+Task success/failure rate for OVERWATCH refresh tasks
+Session count and memory pressure indicators
+App version and last deployment timestamp
+SQL for self-cost:
+
+SELECT
+  REGEXP_SUBSTR(query_tag, 'section=([^|]+)', 1, 1, 'e') AS section,
+  COUNT(*) AS query_count,
+  SUM(COALESCE(credits_used_cloud_services, 0)) AS cloud_credits,
+  ROUND(AVG(total_elapsed_time)/1000, 1) AS avg_elapsed_sec,
+  ROUND(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY total_elapsed_time)/1000, 1) AS p95_sec
+FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
+WHERE query_tag LIKE 'OVERWATCH|%'
+  AND start_time >= DATEADD('day', -7, CURRENT_TIMESTAMP())
+GROUP BY section
+ORDER BY cloud_credits DESC;
+Add to nav under "Command Center" group (admin-only visibility).
+
+PHASE 5: Test Coverage
+Goal: Prove correctness through automated testing at all layers.
+
+5.1 — SQL Compilation Tests
+Instructions for AI:
+
+Create tests/test_sql_compilation.py:
+
+"""Validate that every SQL builder function produces compilable SQL.
+
+Uses Snowflake's EXPLAIN to validate SQL without executing.
+Requires a live Snowflake connection (integration test).
+"""
+import unittest
+from utils.mart import (
+    build_mart_bill_summary_sql,
+    build_mart_cost_cockpit_sql,
+    build_mart_warehouse_overview_sql,
+    # ... every build_*_sql function
+)
+
+class SQLCompilationTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.session = get_test_session()
+    
+    def _assert_compiles(self, sql: str):
+        """EXPLAIN the SQL to validate it compiles without executing."""
+        try:
+            self.session.sql(f"EXPLAIN {sql}").collect()
+        except Exception as e:
+            self.fail(f"SQL failed to compile: {e}\n\nSQL:\n{sql[:500]}")
+    
+    def test_mart_bill_summary_compiles(self):
+        self._assert_compiles(build_mart_bill_summary_sql(7, "ALFA"))
+    
+    def test_mart_cost_cockpit_compiles(self):
+        self._assert_compiles(build_mart_cost_cockpit_sql(7, "ALFA"))
+    
+    # ... one test per SQL builder
+Run these in CI against a test Snowflake account with OVERWATCH schema deployed.
+
+5.2 — Integration Tests for Critical Paths
+Instructions for AI:
+
+Create tests/integration/ directory with:
+
+test_executive_landing_load.py — validates mart query returns expected columns
+test_cost_attribution.py — validates company assignment matches tag map
+test_alert_lifecycle.py — validates alert state transitions
+test_action_queue_crud.py — validates action create/update/verify flow
+test_refresh_freshness.py — validates refresh policy SLA check logic
+Each test should:
+
+Connect to Snowflake test account
+Verify schema exists
+Run the query
+Assert column names match expected schema
+Assert row counts are reasonable (>0 for non-empty marts)
+Assert no NULL values in required columns
+5.3 — Perf Test → Cost Validation Pipeline
+Instructions for AI:
+
+Modify perf_tests/perf_runner.py to also query self-monitoring after the HTTP test:
+
+def measure_snowflake_cost(session, run_id: str) -> dict:
+    """After perf run, check what OVERWATCH cost Snowflake."""
+    result = session.sql(f"""
+      SELECT
+        COUNT(*) AS query_count,
+        SUM(credits_used_cloud_services) AS total_credits,
+        MAX(total_elapsed_time) AS max_elapsed_ms
+      FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
+      WHERE query_tag LIKE 'OVERWATCH|%perf={run_id}%'
+        AND start_time >= DATEADD('hour', -1, CURRENT_TIMESTAMP())
+    """).collect()[0]
+    return {
+        "query_count": result["QUERY_COUNT"],
+        "total_credits": float(result["TOTAL_CREDITS"] or 0),
+        "max_elapsed_ms": int(result["MAX_ELAPSED_MS"] or 0),
+    }
+Add budget assertion: if a single page load costs >0.5 credits, fail the test.
+
+5.4 — UI Smoke Tests
+Instructions for AI:
+
+Create tests/test_section_imports.py:
+
+"""Validate all sections can be imported without errors."""
+import importlib
+import unittest
+from config import SECTION_MODULES
+
+class SectionImportTests(unittest.TestCase):
+    def test_all_registered_sections_importable(self):
+        for section_name, module_path in SECTION_MODULES.items():
+            with self.subTest(section=section_name):
+                module = importlib.import_module(module_path)
+                self.assertTrue(hasattr(module, 'render'), 
+                    f"{module_path} missing render() function")
+Create tests/test_config_integrity.py:
+
+"""Validate config consistency."""
+def test_all_nav_sections_have_modules(self):
+    for group, sections in NAV_GROUPS.items():
+        for section in sections:
+            self.assertIn(section, SECTION_MODULES)
+
+def test_no_orphan_section_files(self):
+    # Every .py in sections/ should be referenced in SECTION_MODULES
+    pass
+
+def test_company_warehouses_are_disjoint(self):
+    assert set(TREXIS_WAREHOUSES).isdisjoint(set(ALFA_WAREHOUSES))
+PHASE 6: Final Polish
+Goal: Professional presentation, versioning, documentation.
+
+6.1 — Add Version Indicator
+Instructions for AI:
+
+Create version.py in app root:
+
+__version__ = "3.1.0"
+__build_date__ = "2026-06-14"
+__changelog_url__ = "https://github.com/yourorg/overwatch/blob/main/CHANGELOG.md"
+Display in sidebar footer:
+
+from version import __version__, __build_date__
+st.caption(f"OVERWATCH v{__version__} • {__build_date__}")
+6.2 — Add OVERWATCH Recovery Runbook
+Instructions for AI:
+
+Create docs/OVERWATCH_RECOVERY_RUNBOOK.md:
+# OVERWATCH Recovery Runbook
+
+## When OVERWATCH is Down
+1. Check Streamlit app status in Snowsight
+2. Check OVERWATCH_WH is not suspended by resource monitor
+3. Check task TASK_OVERWATCH_HOURLY_REFRESH status
+4. Check OVERWATCH_MONITOR role grants
+
+## When Marts Are Stale
+1. Run: SELECT *
+ FROM DBA_MAINT_DB.OVERWATCH.OVERWATCH_REFRESH_POLICY WHERE ...
+2. Check task history: SELECT 
+* FROM SNOWFLAKE.ACCOUNT_USAGE.TASK_HISTORY WHERE ROOT_TASK_NAME LIKE 'TASK_OVERWATCH%'
+3. Manual refresh: EXECUTE TASK TASK_OVERWATCH_HOURLY_REFRESH
+
+## When Alerts Aren't Firing
+1. Check ALERT object status: SHOW ALERTS IN SCHEMA DBA_MAINT_DB.OVERWATCH
+2. Verify notification integration: DESCRIBE NOTIFICATION INTEGRATION OVERWATCH_EMAIL_INT
+3. Check alert history: SELECT * FROM SNOWFLAKE.ACCOUNT_USAGE.ALERT_HISTORY WHERE ...
+
+## On-Call Rotation
+Primary: [DBA Lead]
+Secondary: [Platform Owner]
+Escalation: [Engineering Director]
+6.3 — Create CHANGELOG.md
+Instructions for AI:
+
+Create CHANGELOG.md with semantic versioning and dates for each release.
+6.4 — Remove All Remaining Unprofessional Content
+Instructions for AI:
+
+Delete: OVERWATCH_PROCESS_FOR_16_YEAR_OLD.md
+Delete: OVERWATCH_PROCESS_FOR_GAME_OF_THRONES_FANS.md
+Rename any internal variable containing "god_tier" to "capability_register" or "command_intelligence"
+Review all user-facing strings for internal jargon
+Execution Order (Priority-Ranked)
+Phase	Task	Impact on Score	Hours
+1.2	Consolidate 45 → 8 sections	Architecture +15, UX +12	12
+1.1	Refactor mega-files into packages	Engineering +10	16
+1.4	Remove internal project management	Executive +8, Architecture +5	4
+3.1	Redesign Executive Landing	Executive +15	6
+4.2	DMF integration	Innovation +10, Production +5	8
+2.1	Custom monitoring role	Production +10, Security +10	4
+2.2	Replace unsafe_allow_html	Security +8	8
+4.1	Native ALERT management	Innovation +8	10
+2.3	@st.cache_data	Production +8	6
+4.4	Tag-based cost allocation	Architecture +8, Innovation +5	10
+5.1	SQL compilation tests	Test Coverage +15	8
+5.2	Integration tests	Test Coverage +12	12
+3.2	Pipeline SLA metric	Executive +8	4
+3.3	Executive email digest	Executive +5	4
+4.3	Incident correlation	Innovation +12	16
+2.4	Refresh policy enforcement	Production +5	4
+4.5	Predictive SLA	Innovation +5	4
+4.6	Self-health section	Production +5	6
+1.3	Deduplicate helpers	Engineering +5	4
+2.5	Parameterize SQL	Security +5	8
+5.3	Perf cost validation	Test Coverage +5	4
+5.4	UI smoke tests	Test Coverage +3	3
+6.1-6.4	Polish (version, runbook, changelog)	Production +3, Executive +2	4
+TOTAL			~165 hours
+Expected Final Scores After All Phases
+Dimension	Current	After Phase 1-2	After All Phases
+Engineering	72	87	96
+Architecture	68	88	96
+Executive Usefulness	62	80	95
+Innovation	55	70	95
+Production Readiness	67	85	96
+Test Coverage	60	72	95
+Overall	69	80	95
+Key Principles for Implementation
+Every change must reduce complexity, not add it. If a feature requires a new file >500 lines, it's wrong.
+Delete before you add. Removing Adoption Analytics, Platform Topology, and 4 financial surfaces buys more score than any new feature.
+Native Snowflake > custom code. Use ALERT objects, DMFs, Tags, Budgets API, NOTIFICATION INTEGRATIONS instead of reimplementing them.
+Test the SQL, not just the Python. SQL compilation tests against real Snowflake are worth 10x pure unit tests.
+One screen, one decision. Every page must answer "what should I do next?" in <5 seconds.
+Draggable item workspace:/USER%2524.PUBLIC.DEFAULT%2524/OVERWATCH-main/ALERT_COMMAND_CENTER_RUNBOOK.md was dropped over droppable area file-explorer-droppable-78
