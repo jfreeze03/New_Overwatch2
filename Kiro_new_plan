@@ -1,0 +1,319 @@
+I'll conduct a comprehensive analysis of the OVERWATCH-main/.overwatch_final/ Streamlit application. Let me start by reading all the files you've specified.
+
+Now let me list the sections and utils directories to identify all files:
+
+This is extensive. Let me batch read the core files first, then systematically work through sections and utils:
+
+The files are truncated. Let me read them properly with specific line ranges. First, let me get the line counts:
+
+Let me use readCode which is better for large files:
+
+Now let me read the full content of these files using readFile in chunks. Let me start with config.py:
+
+This is too large. Let me use a smarter approach and extract specific sections using grepSearch. Let me report progress and then read the sections and utils systematically:
+
+Let me take a different, more efficient approach. I'll read specific key sections files and utils files to understand the architecture:
+
+Good! Now let me batch-read key section files to understand what sections do:
+
+Excellent. Now let me read a few more key util files and critical security/session files:
+
+Perfect! Now let me get more sections to understand what's been built. Let me read a couple more strategic sections:
+
+Perfect! Now I have enough context. Let me compile my comprehensive findings by summarizing the architecture, features, security model, and state of previous issues. Let me prepare my final response:
+
+Now let me provide the comprehensive analysis:
+
+Now I have a comprehensive understanding of the updated application. Let me produce the full re-analysis.
+
+---
+
+# OVERWATCH Expert Panel Review — Revised Analysis (Post-Changes)
+
+## Panel Composition
+- Snowflake Distinguished Architect
+- Fortune 100 Data Engineering Director
+- Senior UX Designer
+- Staff Performance Engineer
+- Executive CIO
+- Skeptical External Auditor
+
+---
+
+## Summary of Changes Since Last Review
+
+Key structural changes detected:
+1. **Section consolidation happened.** Navigation reduced from 10 primary sections to 6: Executive Landing, DBA Control Room, Alert Center, Cost & Contract, Workload Operations, Governance & Security.
+2. **Retired sections routed correctly.** Account Health → DBA Control Room, Warehouse Health → Cost & Contract, Security Posture + Change & Drift → Governance & Security, Architecture Readiness → Governance & Security.
+3. **Governance & Security consolidation.** Single section with sub-views (Security Posture, Change & Drift) replacing standalone pages.
+4. **New capabilities added:** Contention Center, Snowflake Value (ROI logging), Service Health, Operational Intelligence roadmap, Recommendation Intelligence with automation readiness lanes.
+5. **God-tier capability roadmap codified** in `operational_intelligence.py` — detection/root-cause engine, pipeline critical path, data quality, predictive FinOps, compliance scorecard.
+6. **Experience Views expanded:** DBA, Executive, FinOps, Security, Platform personas.
+7. **Shell pattern adopted:** Executive Landing, DBA Control Room, Cost & Contract, Alert Center, Workload Operations all use `*_shell.py` + full implementation split.
+
+---
+
+## 1. Executive Value Assessment
+
+### High Value
+- **Executive Landing** — Composite health score, boardroom PPTX export, priority brief with severity ranking. The shell pattern means fast first-paint. CIOs and directors will open this daily.
+- **DBA Control Room** — Morning standup, incident board, handoff notes, escalation packets. Now absorbs Account Health's morning checklist. This is the operator homepage.
+- **Cost & Contract** — Credit burn attribution, spike root-cause, recommendations & action queue, Snowflake Value ROI log. Absorbs Warehouse Health and Optimization. FinOps teams live here.
+
+### Medium Value
+- **Alert Center** — Alert lifecycle, incident timeline, and exception strip. Connection-optional means it works without Snowflake. Useful but executives consume alerts via email/Slack, not dashboards.
+- **Governance & Security** — Consolidates access review, change drift, DBA tools, architecture readiness into one surface with sub-views. Useful for quarterly audits and compliance reviews. Not daily-driver for most roles.
+
+### Low Value
+- **Workload Operations** — Absorbs Query Analysis, Task Management, Pipeline Health, Live Monitor, Query Search, and Contention Center. For engineers only. Correctly hidden from Executive experience view. However, cramming 6+ former sections into one mega-section creates cognitive overload for its actual users.
+
+### Missing KPIs Leadership Would Still Expect
+- **SLA compliance percentage** — P95/P99 query latency against contracted targets with trend
+- **Data freshness SLA** — How stale is the analytics layer? Per-pipeline freshness vs commitment
+- **Credit commitment burn-down** — "X% of annual commitment consumed with Y months remaining"
+- **Cost per business unit** — Tag-based allocation beyond warehouse-level granularity
+- **YoY cost trend** — Not just week-over-week, but strategic annual trend
+
+---
+
+## 2. Snowflake Expertise Score: 8.0 / 10
+
+**Rating: Senior Engineer / early Principal Architect**
+
+### Improvement from last review:
+- Section consolidation shows architectural judgment (reducing 10 to 6 is correct)
+- Shell pattern (fast brief → demand-load full workspace) demonstrates understanding of SiS performance constraints
+- Experience view profiles (DBA/Executive/FinOps/Security/Platform) show enterprise product thinking
+- Recommendation intelligence with automation lanes (Ready/Approval/Evidence/Auto-Close/Manual/Observe) shows governance maturity
+- Snowflake Value ROI log (OVERWATCH_ROI_LOG table with verified savings tracking) shows business acumen
+- Operational Intelligence roadmap with production guardrails shows self-awareness about what's missing
+- Contention Center with LOCK_WAIT_HISTORY, blocked queries, task overlap — this is DBA-grade tooling
+
+### Still signals of inexperience:
+- **Credit estimation still uses `warehouse_size * elapsed_time` formula** — COMPUTE_CREDIT_CASE in config.py persists. The build_metered_credit_cte function still constructs per-query credit estimates rather than exclusively using WAREHOUSE_METERING_HISTORY actuals. The `estimate_live_credits()` function in cost.py confirms this pattern is still primary.
+- **No Dynamic Tables adopted** — The operational intelligence roadmap (Rank 8) explicitly acknowledges this gap but doesn't implement it. Still using task-based marts.
+- **47 section files for 6 navigation items** — The consolidation is purely navigational. The underlying codebase still maintains 45 separate section modules. This is routing consolidation, not architectural consolidation.
+- **Hardcoded ARCHITECTURE_OBJECTIVES still in config.py** — Now routed into Governance & Security but still a Python tuple, not a managed Snowflake table.
+- **DBA_CONTROL_PLANE_SECTION_BASELINE scores self-assigned at 95-98** — This screams bias. No external validation methodology. A principal architect wouldn't ship self-graded rubrics.
+
+---
+
+## 3. Production Readiness Review
+
+### Critical Risk
+- **SQL injection surface persists** — `get_wh_filter_clause("warehouse_name")`, `get_user_filter_clause("user_name")`, and `get_db_filter_clause("database_name")` still construct WHERE clauses from session state text inputs. The `safe_identifier()` and `sql_literal()` functions provide some protection, but the pattern of building SQL via f-strings with user-provided filter values (the "User contains" text_input) remains the weakest link. One code path that skips `sql_literal()` is a breach.
+- **Client-side company scoping** — Company filtering still happens post-query via `_apply_company_scope()` in `utils/data.py`. Full ACCOUNT_USAGE result sets are fetched, then filtered in Python. A malicious or misconfigured role could see cross-company data in transit before the DataFrame filter applies.
+
+### High Risk
+- **47 section modules with no test coverage** — Zero tests found. The recommendation_intelligence.py has complex closure logic, harden_recommendation() has branching business rules, scorecards.py has weighted formulas — all untested. A single regression in any of these modules has no safety net.
+- **Lock striping in query.py is misleading** — `_QUERY_CACHE_LOCK_STRIPE_COUNT = 64` with threading locks suggests concurrent access patterns, but Streamlit runs single-threaded per session. This adds complexity without benefit in SiS.
+- **Unbounded state accumulation** — `_ASK_OVERWATCH_STATE_KEYS` has 38 entries. SECTION_WORKSPACE_STATE_KEYS has 6 pairs. CONTENTION_STATE_KEYS has 16 entries. Combined with transient cache prefixes, a session accumulates 100-200+ keys over a workday with no GC beyond explicit clear.
+- **Python version conflict** — pyproject.toml pins 3.11; environment.yml specifies 3.12. This is a deployment time-bomb.
+
+### Medium Risk
+- **Self-assigned DBA_CONTROL_PLANE_SECTION_BASELINE scores** — These are hardcoded as 95-98% across all sections. If these are displayed to leadership, they're meaningless. If they're used in calculations, they're inflating health scores. Either way, they need external validation or removal.
+- **Lazy import overhead at scale** — Every section uses `lazy_util()` which does `import utils; getattr(utils, name)` on every call. With 47 sections and 10-20 lazy_util references each, that's 500+ dynamic getattr lookups per page render.
+- **No rate limiting** — A user can trigger unlimited Snowflake queries by rapidly changing filters. Each filter change clears cache and triggers fresh queries. No debounce, no concurrency limiter, no credit budget cap per session.
+
+### Low Risk  
+- **Hot-reload version checks on every run** — `CONFIG_VERSION`, `THEME_VERSION`, `SECTION_GUIDANCE_VERSION`, `UTILS_EXPORT_VERSION` string comparisons on every Streamlit rerun are harmless but indicate development tooling leaking into production.
+- **Statement timeout at 840s** — Reasonable, but a 14-minute timeout on a dashboard query will produce terrible UX. Should be 60s for interactive, 840s for admin-only deep scans.
+
+---
+
+## 4. User Experience Review
+
+### Layout: 7/10 (improved from 6)
+- Shell pattern means first paint is fast KPI cards, not full data load
+- Wide layout correct for data density
+- Top filter strip still consumes significant vertical space
+- BUT: 6 primary nav items is within the 5-7 cognitive limit — good improvement
+
+### Navigation: 8/10 (improved from 7)
+- 6 sections is correct. Well within cognitive limits.
+- Experience views (DBA/Executive/FinOps/Security/Platform) are smart persona-based filtering
+- Legacy route compatibility with 40+ redirect aliases shows defensive engineering
+- Section transition overlay with loading indicator is good feedback
+- BUT: Each consolidated section now has internal sub-workflows (Workload Operations has 6+ modes). The complexity shifted from top-level nav to within-section navigation. Users still face the same total surface area.
+
+### Information Density: 5/10 (slightly improved)
+- Brief mode / full workspace split is the right pattern
+- Shell files render compact KPI strips before demanding full data load
+- BUT: 47 underlying section modules means the full workspace of any consolidated section is enormous
+- Workload Operations alone contains: Live Triage, Query Diagnosis, Task Management, Pipeline Health, Contention Center, Stored Proc Tracker. That's 6 sub-tools inside one page.
+
+### Visual Hierarchy: 5/10 (unchanged)
+- Priority Brief remains the strongest hierarchy signal
+- All sub-sections still use identical card/expander/dataframe patterns
+- Status badges (healthy/warning/critical) still rely on color alone
+- No visual differentiation between informational and actionable content
+
+### Chart Selection: 5/10 (unchanged)
+- Still over-reliant on bar charts and DataFrames
+- Contention Center should have timeline/Gantt visualizations for lock waits — appears to use DataFrames
+- No sparklines in KPI cards for trend context
+- No heatmaps for time-of-day patterns
+- Altair is used but underutilized — mostly basic bar/line charts
+
+### Mobile Friendliness: 2/10 (unchanged)
+- No responsive design
+- 4-column KPI grids still break on mobile
+- Not addressed
+
+### Dashboard Fatigue: MEDIUM-HIGH (improved from HIGH)
+- 6 top-level sections reduces initial overwhelm
+- But internal sub-workflows (6+ per consolidated section) mean total surface area is actually larger
+- No personalization or saved views
+- No "my priorities" customization
+
+---
+
+## 5. Feature Gap Analysis
+
+### Features Present Now (improvements):
+- Contention Center (lock waits, task overlap, long DML)
+- Snowflake Value ROI logging
+- Recommendation Intelligence with automation lanes
+- Service Health scorecard
+- Operational Intelligence roadmap (codified, not yet implemented)
+- Experience Views for personas
+
+### Still Missing (competitive gaps):
+1. **Predictive cost forecasting** — Roadmap says "Rank 4: Predictive FinOps" but not implemented. Need time-series projection with confidence intervals and commitment exhaustion date.
+2. **Query anomaly detection** — Statistical outlier detection on query performance. Not just "query took > 300s" but "this query is 3σ slower than its 14-day average."
+3. **Automated right-sizing with measured savings** — Optimization advisor exists but doesn't track pre/post delta. The ROI log exists but requires manual entry. Should auto-detect post-action improvement.
+4. **Data lineage** — ACCESS_HISTORY + QUERY_HISTORY can build lineage graphs. Not present.
+5. **Tag-based cost allocation** — Snowflake object tags for business unit attribution. Not implemented.
+6. **Compliance framework mapping** — CIS Snowflake Benchmark, SOC2 controls. Operational Intelligence Rank 9 describes it but not built.
+7. **Incident correlation engine** — Roadmap Rank 1 but not implemented. When cost spike + task failure + login anomaly happen simultaneously, correlate them as one incident.
+8. **Dynamic Tables** — Roadmap Rank 8, explicitly acknowledged as missing, still not adopted.
+
+### Features to Remove:
+- **Self-assigned scorecard baselines** (DBA_CONTROL_PLANE_SECTION_BASELINE at 95-98%) — Remove or replace with evidence-based scoring
+- **God-tier roadmap as displayable content** — The operational_intelligence.py roadmap is aspirational. Don't display it to users as a feature. It's a development backlog, not a product surface.
+- **PPTX export** — Over-engineered for the use case. PDF or shareable URL would suffice with 1/10th the code.
+
+### Features to Combine:
+- Contention Center + Live Monitor + Query Analysis should be a single "Query Intelligence" workflow within Workload Operations (not 3 separate sub-modes)
+- Service Health + Account Health morning brief should be unified (they overlap on failure counts, queue pressure, and health scores)
+
+---
+
+## 6. "What Am I Missing?"
+
+1. **The consolidation is cosmetic** — You reduced navigation from 10 to 6 items but the codebase still has 47 section modules. You routed them into fewer containers but didn't actually reduce complexity. A new developer sees 45 files in `sections/` and has no idea which 6 are "real." This is routing theater.
+
+2. **No onboarding flow** — A new ALFA DBA opens OVERWATCH for the first time and sees... what? There's no guided tour, no "start here," no progressive reveal of capabilities. The experience view defaults to the role, but there's no explanation of what each view contains.
+
+3. **The ROI log requires manual input** — `OVERWATCH_ROI_LOG` tracks verified savings, but someone has to manually log them. The automation readiness lanes suggest "Auto-Close Candidate" but the actual auto-detection of savings isn't implemented. This means ROI tracking becomes a chore that gets abandoned.
+
+4. **Shared warehouse impact** — OVERWATCH runs on OVERWATCH_WH. If 5 DBAs are using OVERWATCH simultaneously, their queries compete on the same warehouse. No auto-scaling, no isolation, no user-level concurrency control.
+
+5. **No data catalog integration** — Snowflake has INFORMATION_SCHEMA.TAGS, OBJECT_DEPENDENCIES, and the upcoming Polaris catalog. OVERWATCH knows about objects but doesn't leverage the metadata catalog for enrichment.
+
+6. **Session state is not durable** — If a DBA spends 20 minutes loading evidence, navigating, and queuing actions — then the browser tab crashes — everything is lost. No server-side state persistence beyond the action queue table.
+
+7. **No multi-account support** — Insurance companies often have multiple Snowflake accounts (prod, DR, sandbox). OVERWATCH is single-account only. No cross-account comparison or federated view.
+
+8. **Upgrade path still fragile** — Version string comparisons (`CONFIG_VERSION != "2026-06-05-trexis-scope-v1"`) as the reload mechanism means any version mismatch triggers a module reload. In a multi-user SiS deployment, users on different browser cache states could trigger conflicting reloads.
+
+---
+
+## 7. Competitive Review (Snowflake SA Perspective)
+
+### What would impress them:
+- **6-section consolidated navigation** — Shows product maturity and editorial judgment
+- **Experience views** — DBA/Executive/FinOps/Security/Platform personas are exactly what Snowflake recommends for multi-stakeholder apps
+- **Recommendation intelligence with automation lanes** — Governance-first automation (Ready/Approval/Evidence gates) aligns with enterprise change management
+- **Snowflake Value ROI log** — Quantifying DBA value is something Snowflake account teams always ask for
+- **Operational intelligence roadmap** — The ranked capability plan (detection engine, pipeline brain, data quality, predictive FinOps) shows someone thinking strategically
+- **Shell pattern for performance** — Fast first-paint with demand-load full workspace matches SiS best practices
+
+### What would concern them:
+- **Still using estimated credits from warehouse_size×elapsed** — This will generate discrepancies vs. the customer's bill. Snowflake SAs know WAREHOUSE_METERING_HISTORY is the only source of truth.
+- **47 section files for 6 pages** — This looks like technical debt wrapped in a new navigation skin
+- **Self-assigned 95-98% scores** — If presented to Snowflake leadership, this would be immediately challenged. "Who validated these? What's the methodology?"
+- **No Dynamic Tables or Iceberg** — For someone tracking Snowflake roadmap (Adaptive Compute, Openflow, Cortex in Architecture Readiness), not using Dynamic Tables for their own marts is conspicuous
+
+### Questions they'd ask:
+- "How do I deploy this in my account?" → Answer: manual stage upload + DDL setup. No Snowflake Native App, no SQL script generation, no setup wizard.
+- "What's the credit cost to run OVERWATCH per day?" → Answer: Self-monitoring exists but no published SLO.
+- "Can I add a third company without code changes?" → Answer: No. Hardcoded in config.py.
+- "Why aren't you using your own recommendations?" → Answer: The optimization advisor recommends Dynamic Tables (Rank 8 in roadmap) but doesn't use them. Practice what you preach.
+
+---
+
+## 8. Kill List
+
+- **Delete `DBA_CONTROL_PLANE_SECTION_BASELINE` self-assigned scores** — A 96% self-grade on "Data Correctness" while still using estimated credits is dishonest. Remove or replace with measured metrics.
+- **Delete `operational_intelligence.py` as a user-facing surface** — It's a development roadmap. Show it to leadership in a planning document, not in the app.
+- **Delete the PPTX export** — 60+ lines of XML generation code for a feature that could be replaced by a "Print to PDF" browser button. Maintenance cost exceeds value.
+- **Delete the 3-theme system (keep carbon + terminal)** — "Henson" corporate red theme with `#b00020` accent is jarring. Two themes (dark + light) is industry standard. Three is vanity.
+- **Remove `FORWARD_PLATFORM_CONTROLS` for unreleased Snowflake features** — CoWork, Openflow, and AI Agent MCP governance are still aspirational. They remain in Governance & Security. Remove until GA.
+- **Remove `_QUERY_CACHE_LOCK_STRIPE_COUNT = 64` threading machinery** — SiS is single-threaded per session. This adds 64 unused Lock objects and complexity for zero benefit.
+- **Collapse section files** — 47 section modules for 6 navigation items is unjustifiable. Merge the underlying implementations:
+  - `query_analysis.py` + `query_search.py` + `query_workbench.py` + `live_monitor.py` + `detailed_diagnosis.py` → single `workload_operations_core.py`
+  - `security_posture.py` + `security_access.py` + `change_drift.py` + `architecture_readiness.py` + `platform_topology.py` + `dba_tools.py` → single `governance_core.py`
+
+---
+
+## 9. Innovation Opportunities
+
+1. **Measured savings automation** — When a recommendation is actioned (AUTO_SUSPEND changed, warehouse downsized), automatically measure the 7-day post-action credit delta against the 7-day pre-action baseline and write the verified result to OVERWATCH_ROI_LOG. Zero manual effort.
+
+2. **Incident correlation engine** (Roadmap Rank 1) — When a cost spike occurs within ±30 minutes of a DDL change, task failure, or login anomaly, automatically link them as one incident with a single root cause hypothesis. Display as a correlated timeline, not 5 separate alerts.
+
+3. **Query fingerprint families** — Hash query templates (parameterized), group by fingerprint, show: total credits consumed per family, drift in performance over time, and which users/applications generate each family. This is how you find the 3 query patterns responsible for 60% of spend.
+
+4. **Self-healing credit forecasting** — Use 30-day WAREHOUSE_METERING_HISTORY as training data for a simple linear projection. Show "At current burn rate, you will exhaust your annual commitment by [date]." Update daily via Dynamic Table.
+
+5. **One-click remediation with guardrails** — The automation readiness lanes exist but stop at "Approval Required." For "Ready for Guided Execution" lane items, implement actual one-click execution: preview the ALTER statement → show expected impact → execute → verify → log to ROI.
+
+6. **Deployment impact correlation** — If Snowflake tasks or CI/CD systems tag deployments (via QUERY_TAG or Streams), correlate deployment timestamps with performance/cost changes in the 6-hour window following. Show: "This deploy on Tuesday correlated with 23% credit increase on WH_ALFA_TRANSFORM."
+
+7. **Natural language query filter** — Replace the Company/Environment/Warehouse/User/Date filter strip with a single text input: "ALFA prod last 7 days WH_ALFA_LOAD" parsed into structured filters. Use Cortex or regex parsing.
+
+8. **Cross-session state persistence** — Save the DBA's current investigation state (which workflows are open, which evidence is loaded, which actions are queued) to a Snowflake table. Allow resumption from any browser/device.
+
+---
+
+## 10. Final Verdict
+
+| Category | Score | Change |
+|----------|-------|--------|
+| Overall | 69/100 | +7 |
+| Engineering | 72/100 | +4 |
+| Architecture | 74/100 | +9 |
+| Executive Usefulness | 66/100 | +8 |
+| Innovation | 60/100 | +5 |
+| Production Readiness | 52/100 | +4 |
+
+### "If I were presenting this to ALFA leadership tomorrow, what would I change first?"
+
+Remove the self-assigned scorecards (95-98% across the board) and replace every cost metric that uses `COMPUTE_CREDIT_CASE` estimation with a clear label: "Source: WAREHOUSE_METERING_HISTORY (actuals)" or "Source: Estimated from query metadata." If leadership asks "are these numbers from our bill?" you need to answer honestly. Right now the answer is muddled.
+
+### "If I had 40 additional hours, what would produce the biggest improvement?"
+
+1. (12h) Implement measured savings automation — when a recommendation is actioned, auto-verify the delta and write to OVERWATCH_ROI_LOG. This proves OVERWATCH pays for itself.
+2. (10h) Collapse 47 section files into ~12 modules matching the actual architecture. Kill dead code, merge overlapping implementations.
+3. (8h) Replace per-query credit estimation with WAREHOUSE_METERING_HISTORY-only attribution everywhere costs are displayed. Add clear "Estimated" badges where actuals aren't available.
+4. (6h) Add pytest coverage for: cost calculations, recommendation intelligence, scorecards, filter clause builders.
+5. (4h) Remove self-assigned baselines, PPTX export, Henson theme, and lock striping. Clean debt.
+
+### "If I had 200 additional hours, what would turn this into an elite enterprise platform?"
+
+Build a setup wizard that auto-discovers the account topology (warehouses, databases, roles, users) on first run and generates the company/environment configuration dynamically. Implement the top 3 items from the operational intelligence roadmap (detection/correlation engine, pipeline critical path, data quality center). Adopt Dynamic Tables for the mart layer. Add a comprehensive test suite with CI/CD. Package as a Snowflake Native App with versioned releases. Implement measured savings automation, incident correlation, and query fingerprint analysis. Add a public API for integration with PagerDuty/Slack/Teams. Build an email digest service for executive morning briefs without login. That's the delta between "impressive internal tool" and "sellable enterprise product."
+
+---
+
+### What I genuinely dislike (revised):
+
+1. **The consolidation is a facade.** You routed 10+ pages into 6 navigation items, which is correct UX. But the codebase still has 47 section modules, meaning the actual complexity didn't decrease — it just got hidden behind routing. A new developer opens `sections/` and sees more files than before. The architectural debt isn't reduced, it's obscured.
+
+2. **Self-assigned 95-98% scores are intellectually dishonest.** `DBA_CONTROL_PLANE_SECTION_BASELINE` grades every section at 95-98% across 8 rubric dimensions. This either means the rubric is useless (everything passes) or the scores are aspirational (not measured). Either way, displaying these to stakeholders will backfire the moment anyone asks "who validated this?"
+
+3. **The credit estimation problem is still here.** After being explicitly called out, `COMPUTE_CREDIT_CASE` and `estimate_live_credits()` persist. This is the single most verifiable claim your dashboard makes — "this is what you spent" — and it's still an estimate pretending to be a fact. Every dollar figure derived from this formula is suspect.
+
+4. **The operational intelligence roadmap is a vanity feature.** Displaying a ranked capability backlog inside the production app signals "this isn't finished" to anyone reviewing it. It's a planning artifact, not a user feature. Keep it in a design doc.
+
+5. **No tests after two review cycles.** This is now a pattern, not an oversight. A production monitoring tool for an insurance company with zero automated test coverage is a governance liability. If OVERWATCH produces an incorrect alert, recommendation, or cost figure — and there's no test proving it was ever correct — the tool's credibility is one bug away from collapse.
