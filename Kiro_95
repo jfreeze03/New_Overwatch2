@@ -1,0 +1,1177 @@
+Now I have all the context needed. Let me write the comprehensive implementation plan.
+
+---
+
+# Detailed Plan: OVERWATCH Scores to 95+ in All Categories
+
+Current scores: Engineering 72, Architecture 74, Executive Usefulness 66, Innovation 60, Production Readiness 52.
+
+---
+
+## PHASE 1: Production Readiness (52 → 95+)
+*Highest deficit. Fix foundation first.*
+
+### 1.1 — Replace Credit Estimation with Metering Actuals
+
+**Problem:** `COMPUTE_CREDIT_CASE` and `estimate_live_credits()` compute credits from `warehouse_size × elapsed_time`. This is inaccurate for multi-cluster, auto-suspend, and serverless scenarios.
+
+**Implementation:**
+
+1. In `utils/cost.py`, deprecate `estimate_live_credits()` — rename to `_estimate_live_credits_fallback()` and add a docstring marking it as "last resort for INFORMATION_SCHEMA live queries where metering is unavailable."
+
+2. In every section that displays credit costs, ensure the SQL uses `WAREHOUSE_METERING_HISTORY` or `METERING_HISTORY` as the primary source. The existing `build_metered_credit_cte()` already does this correctly (allocating metered credits by execution-time share). The fix is to ensure NO section bypasses this CTE and directly uses `COMPUTE_CREDIT_CASE` for cost display.
+
+3. Audit every reference to `COMPUTE_CREDIT_CASE` in the codebase. For each:
+   - If it's used to estimate credits for display → replace with a JOIN to `build_metered_credit_cte()` or `WAREHOUSE_METERING_HISTORY`
+   - If it's used for relative sizing/ranking only (not dollar amounts) → keep but label "Relative size indicator, not billed credits"
+
+4. Add a visible badge to every cost metric:
+   - "Source: WAREHOUSE_METERING_HISTORY (billed)" for metering-based numbers
+   - "Source: Allocated from metering by execution share" for per-query allocation
+   - "Source: Estimated (metering unavailable)" for live-only fallback
+
+5. In `config.py`, add:
+```python
+CREDIT_SOURCE_LABELS = {
+    "metered": "Billed credits from WAREHOUSE_METERING_HISTORY",
+    "allocated": "Allocated from billed metering by execution-time share",
+    "attributed": "Official Snowflake QUERY_ATTRIBUTION_HISTORY",
+    "estimated": "Estimated from warehouse size × elapsed (metering unavailable)",
+}
+```
+
+6. Prefer `QUERY_ATTRIBUTION_HISTORY` when available. The `build_metered_credit_cte(prefer_query_attribution=True)` path exists — make it the default when `query_attribution_supported(session)` returns True.
+
+---
+
+### 1.2 — SQL Injection Hardening
+
+**Problem:** Filter clauses built from session state text inputs via f-string interpolation.
+
+**Implementation:**
+
+1. In `utils/company_filter.py`, every `get_*_filter_clause()` function must validate input:
+```python
+def get_user_filter_clause(column: str, *, alias: str = "") -> str:
+    user_input = str(st.session_state.get("global_user", "") or "").strip()
+    if not user_input:
+        return ""
+    # Sanitize: only allow alphanumeric, underscore, percent, at-sign
+    sanitized = re.sub(r"[^A-Za-z0-9_%@. -]", "", user_input)[:128]
+    if not sanitized:
+        return ""
+    col = safe_identifier(column) if alias == "" else f"{safe_identifier(alias)}.{safe_identifier(column)}"
+    return f"AND {col} ILIKE {sql_literal(f'%{sanitized}%')}"
+```
+
+2. Add input validation regex constants:
+```python
+_SAFE_FILTER_PATTERN = re.compile(r"^[A-Za-z0-9_%@.\- ]{0,128}$")
+```
+
+3. Add a `validate_filter_input(value: str) -> str` function that strips/rejects unsafe characters.
+
+4. Move all filter clause builders to use `sql_literal()` for values — never raw f-string interpolation.
+
+5. Add a security helper `assert_no_sql_injection(clause: str) -> str` that checks for common injection patterns (`;`, `--`, `UNION`, `DROP`, `ALTER`, `GRANT`) in the assembled clause and raises if found.
+
+---
+
+### 1.3 — Server-Side Company Scoping
+
+**Problem:** Full ACCOUNT_USAGE result sets fetched, then filtered client-side in Python.
+
+**Implementation:**
+
+1. In `utils/company_filter.py`, ensure `get_global_filter_clause()` returns a complete WHERE clause fragment that includes warehouse AND database filters for the active company.
+
+2. Every SQL query builder must accept and apply company scope at the SQL level (WHERE clause), not post-query. Audit every `run_query()` call and ensure the SQL includes `{get_global_filter_clause()}`.
+
+3. Remove or deprecate `_apply_company_scope()` in `utils/data.py` for any query that already has server-side filtering. Keep it only as a defense-in-depth secondary filter with a comment explaining why.
+
+4. Add a linting rule (or a test) that flags any `run_query()` call whose SQL doesn't include a company/warehouse filter clause.
+
+---
+
+### 1.4 — Test Suite
+
+**Problem:** Zero automated tests.
+
+**Implementation:**
+
+Create `tests/` directory with pytest structure:
+
+```
+tests/
+├── conftest.py                    # Shared fixtures, mock session
+├── test_cost_calculations.py      # Unit tests for cost.py functions
+├── test_filter_clauses.py         # SQL injection prevention tests  
+├── test_recommendation_intel.py   # harden_recommendation(), automation lanes
+├── test_scorecards.py             # Weighted score calculations
+├── test_query_builders.py         # SQL builder output validation
+├── test_cache.py                  # Cache invalidation logic
+├── test_session.py                # Query tag building, TTL logic
+├── test_company_filter.py         # Company scoping correctness
+└── test_operational_intelligence.py  # Capability row generation
+```
+
+Key test cases:
+
+```python
+# test_cost_calculations.py
+def test_format_credits_zero():
+    assert format_credits(0) == "0 ($0.00)"
+
+def test_format_credits_large():
+    result = format_credits(1000, credit_price=3.68)
+    assert "$3,680" in result
+
+def test_credits_to_dollars():
+    assert credits_to_dollars(10, 3.68) == 36.80
+
+def test_estimate_live_credits_fallback():
+    row = {"WAREHOUSE_SIZE": "Medium", "EXEC_SEC": 3600}
+    result = estimate_live_credits(row)
+    assert result == 4.0  # Medium = 4 credits/hour
+
+# test_filter_clauses.py
+def test_user_filter_rejects_injection():
+    # Mock session state with injection attempt
+    with mock_session_state(global_user="'; DROP TABLE users; --"):
+        clause = get_user_filter_clause("user_name")
+        assert "DROP" not in clause
+        assert "sql_literal" style quoting is used
+
+def test_wh_filter_empty_returns_empty():
+    with mock_session_state(global_warehouse=""):
+        assert get_wh_filter_clause("warehouse_name") == ""
+
+# test_recommendation_intel.py
+def test_harden_recommendation_sets_all_fields():
+    rec = {"Category": "Cost", "Entity": "WH_TEST", "Finding": "Idle"}
+    result = harden_recommendation(rec)
+    assert "Decision" in result
+    assert "Evidence Packet" in result
+    assert "Proof Required" in result
+    assert "Do Not Do" in result
+```
+
+Add to `pyproject.toml`:
+```toml
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+```
+
+Target: 80%+ coverage on `utils/cost.py`, `utils/company_filter.py`, `utils/recommendation_intelligence.py`, `utils/scorecards.py`, `utils/query.py` (query builder functions).
+
+---
+
+### 1.5 — Python Version Alignment
+
+**Problem:** pyproject.toml says 3.11, environment.yml says 3.12.
+
+**Implementation:** Align both to `python = ">=3.11,<3.13"` in pyproject.toml and `python=3.11` in environment.yml (SiS currently supports 3.11 most reliably). Add a comment noting the version decision.
+
+---
+
+### 1.6 — Remove Threading Lock Stripes
+
+**Problem:** 64 threading.Lock objects serve no purpose in single-threaded SiS.
+
+**Implementation:** In `utils/query.py`:
+- Remove `_QUERY_CACHE_LOCK_STRIPE_COUNT` and `_QUERY_CACHE_LOCK_STRIPES`
+- Remove all `with _QUERY_CACHE_LOCK_STRIPES[...]` usage
+- Add comment: "# SiS runs single-threaded per session; no concurrency control needed"
+
+---
+
+### 1.7 — Statement Timeout Tiering
+
+**Problem:** Single 840s timeout for all queries.
+
+**Implementation:**
+```python
+STATEMENT_TIMEOUTS = {
+    "interactive": 60,      # Dashboard page loads
+    "drill": 120,           # On-demand deep drills
+    "admin": 840,           # Admin-only heavy queries
+    "metadata": 30,         # SHOW statements, DESCRIBE
+}
+```
+
+Apply the appropriate timeout before each query execution via `ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS`.
+
+---
+
+### 1.8 — Rate Limiting / Query Budget Enforcement
+
+**Problem:** No limit on queries per session/filter-change cycle.
+
+**Implementation:**
+
+In `utils/query.py`, add:
+```python
+_MAX_QUERIES_PER_RENDER_CYCLE = 15
+_QUERY_CYCLE_COUNTER_KEY = "_overwatch_query_cycle_count"
+_QUERY_CYCLE_RESET_KEY = "_overwatch_query_cycle_reset_at"
+
+def _check_query_budget() -> bool:
+    """Return False if the current render cycle has exceeded query budget."""
+    now = time.time()
+    reset_at = st.session_state.get(_QUERY_CYCLE_RESET_KEY, 0)
+    if now - reset_at > 5:  # Reset every 5 seconds (one Streamlit rerun)
+        st.session_state[_QUERY_CYCLE_COUNTER_KEY] = 0
+        st.session_state[_QUERY_CYCLE_RESET_KEY] = now
+    count = st.session_state.get(_QUERY_CYCLE_COUNTER_KEY, 0)
+    if count >= _MAX_QUERIES_PER_RENDER_CYCLE:
+        return False
+    st.session_state[_QUERY_CYCLE_COUNTER_KEY] = count + 1
+    return True
+```
+
+Call `_check_query_budget()` at the start of `run_query()`. If budget exceeded, return cached result or show "Query budget reached — click Refresh for more data."
+
+---
+
+## PHASE 2: Architecture (74 → 95+)
+
+### 2.1 — Collapse Section Files
+
+**Problem:** 47 section modules for 6 navigation items.
+
+**Implementation:**
+
+Reorganize `sections/` to match the actual 6-page architecture:
+
+```
+sections/
+├── __init__.py
+├── base.py
+├── navigation.py
+├── shell_helpers.py
+├── executive_landing/
+│   ├── __init__.py          # render_executive_landing() entry point
+│   ├── shell.py             # Brief/fast-paint shell
+│   ├── platform_summary.py  # Full workspace: health score, cost drivers
+│   └── boardroom_export.py  # PPTX/PDF export (if kept)
+├── dba_control_room/
+│   ├── __init__.py
+│   ├── shell.py
+│   ├── morning_brief.py     # Morning standup, exception triage
+│   ├── incident_board.py    # Incident timeline, handoff
+│   └── service_health.py    # Uptime, login health, task health
+├── alert_center/
+│   ├── __init__.py
+│   ├── shell.py
+│   └── alert_lifecycle.py   # Alert config, history, acknowledgement
+├── cost_contract/
+│   ├── __init__.py
+│   ├── shell.py
+│   ├── cost_drivers.py      # Credit burn attribution
+│   ├── recommendations.py   # Optimization advisor, action queue
+│   ├── snowflake_value.py   # ROI log
+│   └── forecasting.py       # Predictive cost (new)
+├── workload_operations/
+│   ├── __init__.py
+│   ├── shell.py
+│   ├── query_diagnosis.py   # Query analysis, search, profiles
+│   ├── task_pipeline.py     # Task management, pipeline health
+│   └── contention.py        # Lock waits, queueing, overlap
+├── governance_security/
+│   ├── __init__.py
+│   ├── shell.py
+│   ├── access_security.py   # Login risk, grants, MFA, data sharing
+│   ├── change_control.py    # DDL drift, schema compare, object changes
+│   └── architecture.py      # Architecture readiness (production features only)
+```
+
+Delete all standalone files that are now subsumed: `account_health.py`, `warehouse_health.py`, `security_posture.py`, `change_drift.py`, `query_analysis.py`, `query_search.py`, `query_workbench.py`, `live_monitor.py`, `detailed_diagnosis.py`, `cost_center.py`, `budget_governance.py`, `finops_control.py`, `adoption_analytics.py`, `storage_monitor.py`, `spcs_tracker.py`, `cortex_monitor.py`, `stored_proc_tracker.py`, `platform_topology.py`, `data_sharing.py`, `security_access.py`, `dba_tools.py`, `usage_overview.py`, `object_change_monitor.py`, `pipeline_health.py`, `contention_center.py`, `snowflake_value.py`, `service_health.py`.
+
+Keep all functionality — merge into the sub-modules above.
+
+---
+
+### 2.2 — Dynamic Configuration (Remove Hardcoded Tuples)
+
+**Problem:** Warehouses, databases, architecture objectives, forward-platform controls all hardcoded in config.py.
+
+**Implementation:**
+
+1. Create a setup module `utils/setup.py`:
+```python
+def discover_account_warehouses(session) -> list[str]:
+    """Auto-discover warehouses from SHOW WAREHOUSES."""
+    df = session.sql("SHOW WAREHOUSES").collect()
+    return [row["name"] for row in df]
+
+def discover_account_databases(session) -> list[str]:
+    """Auto-discover databases from SHOW DATABASES."""
+    df = session.sql("SHOW DATABASES").collect()
+    return [row["name"] for row in df if row["name"] != "SNOWFLAKE"]
+```
+
+2. Create a configuration table:
+```sql
+CREATE TABLE IF NOT EXISTS DBA_MAINT_DB.OVERWATCH.OVERWATCH_CONFIG (
+    CONFIG_KEY VARCHAR(200) NOT NULL,
+    CONFIG_VALUE VARIANT NOT NULL,
+    COMPANY VARCHAR(50) DEFAULT 'ALL',
+    UPDATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+    UPDATED_BY VARCHAR(200) DEFAULT CURRENT_USER(),
+    PRIMARY KEY (CONFIG_KEY, COMPANY)
+);
+```
+
+3. Store architecture objectives, company definitions, warehouse/database lists, pricing, and thresholds in this table.
+
+4. On app startup, load config from the table with fallback to hardcoded defaults:
+```python
+def load_dynamic_config(session) -> dict:
+    try:
+        df = session.sql("SELECT * FROM DBA_MAINT_DB.OVERWATCH.OVERWATCH_CONFIG").collect()
+        return {row["CONFIG_KEY"]: json.loads(row["CONFIG_VALUE"]) for row in df}
+    except Exception:
+        return {}  # Fall back to config.py hardcoded values
+```
+
+5. Add a "Settings" admin page where DBAs can edit config entries through the UI (INSERT/UPDATE to OVERWATCH_CONFIG).
+
+---
+
+### 2.3 — Dynamic Table Mart Layer
+
+**Problem:** Marts use task-based refresh; no Dynamic Tables despite recommending them.
+
+**Implementation:**
+
+Create `utils/mart_ddl.py` with Dynamic Table definitions:
+
+```python
+def build_dynamic_table_ddl() -> list[str]:
+    return [
+        """
+        CREATE OR REPLACE DYNAMIC TABLE DBA_MAINT_DB.OVERWATCH.DT_DAILY_COST_SUMMARY
+        TARGET_LAG = '1 hour'
+        WAREHOUSE = OVERWATCH_WH
+        AS
+        SELECT
+            DATE_TRUNC('day', start_time) AS usage_date,
+            warehouse_name,
+            SUM(credits_used_compute) AS compute_credits,
+            SUM(credits_used_cloud_services) AS cloud_credits,
+            SUM(credits_used) AS total_credits,
+            COUNT(*) AS metering_rows
+        FROM SNOWFLAKE.ACCOUNT_USAGE.WAREHOUSE_METERING_HISTORY
+        WHERE start_time >= DATEADD('day', -90, CURRENT_TIMESTAMP())
+        GROUP BY usage_date, warehouse_name
+        """,
+        """
+        CREATE OR REPLACE DYNAMIC TABLE DBA_MAINT_DB.OVERWATCH.DT_QUERY_HEALTH_HOURLY
+        TARGET_LAG = '1 hour'
+        WAREHOUSE = OVERWATCH_WH
+        AS
+        SELECT
+            DATE_TRUNC('hour', start_time) AS hour_bucket,
+            warehouse_name,
+            COUNT(*) AS query_count,
+            COUNT_IF(execution_status = 'FAILED_WITH_ERROR') AS failed_count,
+            ROUND(AVG(total_elapsed_time / 1000), 2) AS avg_elapsed_sec,
+            ROUND(SUM(bytes_spilled_to_remote_storage) / POWER(1024, 3), 2) AS remote_spill_gb,
+            COUNT_IF(queued_overload_time > 0) AS queued_count
+        FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
+        WHERE start_time >= DATEADD('day', -90, CURRENT_TIMESTAMP())
+          AND warehouse_name IS NOT NULL
+        GROUP BY hour_bucket, warehouse_name
+        """,
+        """
+        CREATE OR REPLACE DYNAMIC TABLE DBA_MAINT_DB.OVERWATCH.DT_TASK_HEALTH_DAILY
+        TARGET_LAG = '1 hour'
+        WAREHOUSE = OVERWATCH_WH
+        AS
+        SELECT
+            DATE_TRUNC('day', scheduled_time) AS task_date,
+            database_name,
+            schema_name,
+            name AS task_name,
+            COUNT(*) AS run_count,
+            COUNT_IF(state = 'FAILED') AS failed_count,
+            AVG(DATEDIFF('second', scheduled_time, completed_time)) AS avg_duration_sec
+        FROM SNOWFLAKE.ACCOUNT_USAGE.TASK_HISTORY
+        WHERE scheduled_time >= DATEADD('day', -90, CURRENT_TIMESTAMP())
+        GROUP BY task_date, database_name, schema_name, task_name
+        """,
+    ]
+```
+
+Update sections to prefer Dynamic Tables when available, with ACCOUNT_USAGE fallback.
+
+---
+
+### 2.4 — Remove Self-Assigned Scorecards
+
+**Problem:** `DBA_CONTROL_PLANE_SECTION_BASELINE` with 95-98% scores is unvalidated.
+
+**Implementation:**
+
+1. Delete `DBA_CONTROL_PLANE_SECTION_BASELINE` from `utils/scorecards.py`.
+
+2. Replace with measured scores based on actual operational signals:
+```python
+def compute_section_health_score(section: str, evidence: dict) -> float:
+    """Compute section health from live evidence, not hardcoded baselines."""
+    weights = DBA_CONTROL_PLANE_RUBRIC  # Keep the rubric
+    scores = {}
+    # domain_coverage: measured by whether required data sources loaded successfully
+    scores["domain_coverage"] = 100 if evidence.get("data_loaded") else 0
+    # data_correctness: measured by reconciliation variance
+    variance_pct = evidence.get("cost_reconciliation_variance_pct", 0)
+    scores["data_correctness"] = max(0, 100 - variance_pct * 10)
+    # actionability: measured by % of findings that have generated recommendations
+    findings = evidence.get("total_findings", 0)
+    actioned = evidence.get("findings_with_recommendations", 0)
+    scores["actionability"] = (actioned / max(findings, 1)) * 100
+    # ... etc for each rubric dimension
+    return weighted_score(scores, weights)
+```
+
+---
+
+## PHASE 3: Engineering (72 → 95+)
+
+### 3.1 — Eliminate Lazy Import Overhead
+
+**Problem:** 500+ `lazy_util()` calls doing `import utils; getattr(utils, name)` on every invocation.
+
+**Implementation:**
+
+Replace the lazy_util pattern with module-level imports that are deferred only at the module boundary, not at every call:
+
+```python
+# sections/cost_contract/__init__.py
+from __future__ import annotations
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from utils import run_query, format_credits, credits_to_dollars  # type hints only
+
+def _utils():
+    """Cache the utils module reference once per section import."""
+    import utils
+    return utils
+
+# Use as: _utils().run_query(...)
+# OR: import at function-call time (still better than per-call getattr)
+```
+
+Better approach: since sections are loaded on-demand via shell pattern, just use normal imports at the top of each section file. The shell files handle the lazy boundary.
+
+---
+
+### 3.2 — Session State Garbage Collection
+
+**Problem:** 100-200+ keys accumulate with no cleanup.
+
+**Implementation:**
+
+In `utils/cache.py`, add periodic GC:
+
+```python
+_GC_INTERVAL_MINUTES = 10
+_GC_LAST_RUN_KEY = "_overwatch_gc_last_run"
+_MAX_SESSION_STATE_KEYS = 300
+
+def maybe_run_session_gc():
+    """Prune stale transient state if accumulation exceeds threshold."""
+    now = time.time()
+    last_run = st.session_state.get(_GC_LAST_RUN_KEY, 0)
+    if now - last_run < _GC_INTERVAL_MINUTES * 60:
+        return
+    if len(st.session_state) < _MAX_SESSION_STATE_KEYS:
+        return
+    
+    # Remove stale timestamp keys older than 30 minutes
+    stale_keys = []
+    for key in list(st.session_state.keys()):
+        if key.startswith("_ts_"):
+            ts = st.session_state.get(key)
+            if isinstance(ts, (int, float)) and now - ts > 1800:
+                stale_keys.append(key)
+        elif key.startswith("df_") and key not in _active_section_data_keys():
+            stale_keys.append(key)
+    
+    for key in stale_keys:
+        st.session_state.pop(key, None)
+    st.session_state[_GC_LAST_RUN_KEY] = now
+```
+
+Call `maybe_run_session_gc()` at the top of each section render.
+
+---
+
+### 3.3 — Error Correlation IDs
+
+**Problem:** No error codes or correlation IDs for debugging.
+
+**Implementation:**
+
+```python
+# utils/query.py
+import uuid
+
+def run_query(sql: str, *, ttl_key: str = "", tier: str = "recent", section: str = "") -> pd.DataFrame:
+    correlation_id = str(uuid.uuid4())[:8]
+    try:
+        # ... existing query logic ...
+    except Exception as e:
+        error_record = {
+            "correlation_id": correlation_id,
+            "section": section,
+            "sql_preview": sql[:200],
+            "error": str(e)[:500],
+            "timestamp": datetime.now().isoformat(),
+        }
+        _append_error_log(error_record)
+        raise QueryExecutionError(correlation_id, str(e)) from e
+```
+
+Display correlation IDs in error messages so users can report them for debugging.
+
+---
+
+### 3.4 — CI/CD Pipeline Definition
+
+**Problem:** No deployment automation, no regression testing.
+
+**Implementation:**
+
+Create `.github/workflows/overwatch-ci.yml`:
+```yaml
+name: OVERWATCH CI
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install pytest pytest-cov pandas streamlit
+      - run: pytest tests/ --cov=utils --cov-report=term-missing --cov-fail-under=80
+  
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install ruff
+      - run: ruff check .overwatch_final/
+  
+  type-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install mypy pandas-stubs
+      - run: mypy .overwatch_final/utils/ --ignore-missing-imports
+```
+
+---
+
+## PHASE 4: Executive Usefulness (66 → 95+)
+
+### 4.1 — Predictive Cost Forecasting
+
+**Implementation:**
+
+Create `utils/forecasting.py`:
+```python
+import numpy as np
+from datetime import date, timedelta
+
+def linear_credit_forecast(
+    daily_credits: list[tuple[date, float]],
+    forecast_days: int = 90,
+) -> dict:
+    """Simple linear regression forecast on daily credit consumption."""
+    if len(daily_credits) < 7:
+        return {"confidence": "insufficient_data"}
+    
+    dates = [d[0] for d in daily_credits]
+    credits = [d[1] for d in daily_credits]
+    x = np.array([(d - dates[0]).days for d in dates], dtype=float)
+    y = np.array(credits, dtype=float)
+    
+    # Linear regression
+    n = len(x)
+    slope = (n * np.sum(x * y) - np.sum(x) * np.sum(y)) / (n * np.sum(x**2) - np.sum(x)**2)
+    intercept = (np.sum(y) - slope * np.sum(x)) / n
+    
+    # Forecast
+    last_day = (dates[-1] - dates[0]).days
+    forecast_x = np.arange(last_day + 1, last_day + forecast_days + 1)
+    forecast_y = slope * forecast_x + intercept
+    
+    # Commitment exhaustion
+    annual_commitment = float(st.session_state.get("annual_credit_commitment", 0))
+    ytd_consumed = sum(credits)
+    daily_burn_rate = slope if slope > 0 else np.mean(credits)
+    remaining = annual_commitment - ytd_consumed
+    days_until_exhaustion = int(remaining / daily_burn_rate) if daily_burn_rate > 0 else None
+    
+    return {
+        "daily_burn_rate": round(float(daily_burn_rate), 2),
+        "projected_30d": round(float(daily_burn_rate * 30), 2),
+        "projected_90d": round(float(daily_burn_rate * 90), 2),
+        "annual_projected": round(float(daily_burn_rate * 365), 2),
+        "commitment_exhaustion_date": (date.today() + timedelta(days=days_until_exhaustion)) if days_until_exhaustion else None,
+        "ytd_consumed": round(ytd_consumed, 2),
+        "trend_direction": "increasing" if slope > 0 else "decreasing",
+        "confidence": "high" if len(daily_credits) >= 30 else "moderate",
+    }
+```
+
+SQL to feed it:
+```python
+def build_daily_credit_trend_sql(days_back: int = 90) -> str:
+    return f"""
+    SELECT DATE(start_time) AS usage_date,
+           SUM(credits_used) AS daily_credits
+    FROM SNOWFLAKE.ACCOUNT_USAGE.WAREHOUSE_METERING_HISTORY
+    WHERE start_time >= DATEADD('day', -{days_back}, CURRENT_TIMESTAMP())
+    GROUP BY usage_date
+    ORDER BY usage_date
+    """
+```
+
+Add to Executive Landing: "Credit Forecast" card showing projected month-end spend, commitment exhaustion date, and trend direction.
+
+---
+
+### 4.2 — SLA Tracking
+
+**Implementation:**
+
+Create `utils/sla.py`:
+```python
+def build_query_latency_sla_sql(days_back: int = 7, p95_target_sec: float = 30) -> str:
+    return f"""
+    WITH latency AS (
+        SELECT
+            warehouse_name,
+            PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY total_elapsed_time / 1000) AS p95_sec,
+            PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY total_elapsed_time / 1000) AS p99_sec,
+            COUNT(*) AS query_count,
+            COUNT_IF(total_elapsed_time / 1000 > {p95_target_sec}) AS breaching_count
+        FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
+        WHERE start_time >= DATEADD('day', -{days_back}, CURRENT_TIMESTAMP())
+          AND warehouse_name IS NOT NULL
+          AND execution_status = 'SUCCESS'
+        GROUP BY warehouse_name
+    )
+    SELECT
+        warehouse_name,
+        ROUND(p95_sec, 2) AS p95_latency_sec,
+        ROUND(p99_sec, 2) AS p99_latency_sec,
+        query_count,
+        breaching_count,
+        ROUND(100.0 * (query_count - breaching_count) / NULLIF(query_count, 0), 2) AS sla_compliance_pct,
+        {p95_target_sec} AS target_sec
+    FROM latency
+    ORDER BY sla_compliance_pct ASC
+    """
+```
+
+Display in Executive Landing and DBA Control Room as a compliance percentage with trend.
+
+---
+
+### 4.3 — Cost Per Business Unit (Tag-Based)
+
+**Implementation:**
+
+```python
+def build_tag_based_cost_attribution_sql(days_back: int = 7) -> str:
+    return f"""
+    WITH tagged_warehouses AS (
+        SELECT
+            tag_name,
+            tag_value,
+            object_name AS warehouse_name
+        FROM SNOWFLAKE.ACCOUNT_USAGE.TAG_REFERENCES
+        WHERE domain = 'WAREHOUSE'
+          AND tag_name IN ('COST_CENTER', 'BUSINESS_UNIT', 'TEAM', 'APPLICATION')
+    ),
+    metering AS (
+        SELECT
+            warehouse_name,
+            SUM(credits_used) AS total_credits
+        FROM SNOWFLAKE.ACCOUNT_USAGE.WAREHOUSE_METERING_HISTORY
+        WHERE start_time >= DATEADD('day', -{days_back}, CURRENT_TIMESTAMP())
+        GROUP BY warehouse_name
+    )
+    SELECT
+        COALESCE(t.tag_value, 'Untagged') AS business_unit,
+        COALESCE(t.tag_name, 'No tag') AS tag_type,
+        SUM(m.total_credits) AS credits,
+        COUNT(DISTINCT m.warehouse_name) AS warehouse_count
+    FROM metering m
+    LEFT JOIN tagged_warehouses t ON m.warehouse_name = t.warehouse_name
+    GROUP BY business_unit, tag_type
+    ORDER BY credits DESC
+    """
+```
+
+---
+
+### 4.4 — YoY and MoM Trend Comparison
+
+**Implementation:**
+
+Add to Executive Landing cost section:
+```python
+def build_cost_comparison_sql() -> str:
+    return """
+    SELECT
+        'Current Month' AS period,
+        SUM(credits_used) AS total_credits
+    FROM SNOWFLAKE.ACCOUNT_USAGE.WAREHOUSE_METERING_HISTORY
+    WHERE start_time >= DATE_TRUNC('month', CURRENT_DATE())
+    UNION ALL
+    SELECT
+        'Prior Month' AS period,
+        SUM(credits_used) AS total_credits
+    FROM SNOWFLAKE.ACCOUNT_USAGE.WAREHOUSE_METERING_HISTORY
+    WHERE start_time >= DATEADD('month', -1, DATE_TRUNC('month', CURRENT_DATE()))
+      AND start_time < DATE_TRUNC('month', CURRENT_DATE())
+    UNION ALL
+    SELECT
+        'Same Month Last Year' AS period,
+        SUM(credits_used) AS total_credits
+    FROM SNOWFLAKE.ACCOUNT_USAGE.WAREHOUSE_METERING_HISTORY
+    WHERE start_time >= DATEADD('year', -1, DATE_TRUNC('month', CURRENT_DATE()))
+      AND start_time < DATEADD('year', -1, DATEADD('month', 1, DATE_TRUNC('month', CURRENT_DATE())))
+    """
+```
+
+---
+
+### 4.5 — Executive Email Digest
+
+**Implementation:**
+
+Create a Snowflake Task + Stored Procedure that:
+1. Runs the top-5 priority brief queries daily at 6am
+2. Formats results as HTML email
+3. Sends via Snowflake external function or SYSTEM$SEND_EMAIL()
+4. Configurable recipients per role in OVERWATCH_CONFIG table
+
+```python
+def build_email_digest_procedure_ddl() -> str:
+    return """
+    CREATE OR REPLACE PROCEDURE DBA_MAINT_DB.OVERWATCH.SEND_MORNING_DIGEST()
+    RETURNS VARCHAR
+    LANGUAGE SQL
+    EXECUTE AS CALLER
+    AS
+    $$
+    DECLARE
+        digest_html VARCHAR;
+    BEGIN
+        -- Build digest from Dynamic Tables
+        SELECT ... INTO :digest_html FROM DBA_MAINT_DB.OVERWATCH.DT_DAILY_COST_SUMMARY ...;
+        
+        CALL SYSTEM$SEND_EMAIL(
+            'overwatch_email_integration',
+            (SELECT LISTAGG(email, ',') FROM DBA_MAINT_DB.OVERWATCH.OVERWATCH_CONFIG 
+             WHERE CONFIG_KEY = 'DIGEST_RECIPIENTS'),
+            'OVERWATCH Daily Digest',
+            :digest_html,
+            'text/html'
+        );
+        RETURN 'Digest sent';
+    END;
+    $$;
+    
+    CREATE OR REPLACE TASK DBA_MAINT_DB.OVERWATCH.TASK_MORNING_DIGEST
+    WAREHOUSE = OVERWATCH_WH
+    SCHEDULE = 'USING CRON 0 6 * * * America/Chicago'
+    AS
+    CALL DBA_MAINT_DB.OVERWATCH.SEND_MORNING_DIGEST();
+    """
+```
+
+---
+
+## PHASE 5: Innovation (60 → 95+)
+
+### 5.1 — Measured Savings Automation
+
+**Problem:** ROI log exists but requires manual entry.
+
+**Implementation:**
+
+```python
+# utils/measured_savings.py
+
+def measure_recommendation_impact(
+    session,
+    action_id: str,
+    entity: str,
+    entity_type: str,
+    baseline_start: date,
+    baseline_end: date,
+    post_action_start: date,
+    post_action_end: date,
+) -> dict:
+    """Automatically measure credit delta after a recommendation was actioned."""
+    
+    if entity_type == "Warehouse":
+        sql = f"""
+        SELECT
+            '{action_id}' AS action_id,
+            SUM(IFF(DATE(start_time) BETWEEN '{baseline_start}' AND '{baseline_end}', credits_used, 0)) 
+                / NULLIF(DATEDIFF('day', '{baseline_start}', '{baseline_end}'), 0) AS baseline_daily_credits,
+            SUM(IFF(DATE(start_time) BETWEEN '{post_action_start}' AND '{post_action_end}', credits_used, 0))
+                / NULLIF(DATEDIFF('day', '{post_action_start}', '{post_action_end}'), 0) AS post_action_daily_credits
+        FROM SNOWFLAKE.ACCOUNT_USAGE.WAREHOUSE_METERING_HISTORY
+        WHERE warehouse_name = {sql_literal(entity)}
+          AND start_time >= '{baseline_start}'
+        """
+        result = run_query(sql)
+        if result.empty:
+            return {"verified": False, "reason": "No metering data"}
+        
+        baseline = float(result.iloc[0]["BASELINE_DAILY_CREDITS"] or 0)
+        post = float(result.iloc[0]["POST_ACTION_DAILY_CREDITS"] or 0)
+        savings_daily = baseline - post
+        
+        return {
+            "verified": savings_daily > 0,
+            "baseline_daily_credits": baseline,
+            "post_action_daily_credits": post,
+            "savings_daily_credits": savings_daily,
+            "savings_monthly_credits": savings_daily * 30,
+            "savings_monthly_dollars": credits_to_dollars(savings_daily * 30),
+            "measurement_method": "WAREHOUSE_METERING_HISTORY 7-day pre/post comparison",
+        }
+```
+
+Auto-trigger: When an action queue item is marked "Fixed", schedule a 7-day follow-up measurement task. After 7 days, run `measure_recommendation_impact()` and write to `OVERWATCH_ROI_LOG` with `VERIFIED = TRUE/FALSE`.
+
+---
+
+### 5.2 — Incident Correlation Engine
+
+**Implementation:**
+
+```python
+# utils/incident_correlation.py
+
+def build_incident_correlation_sql(hours_back: int = 6) -> str:
+    """Find co-occurring anomalies within the same time window."""
+    return f"""
+    WITH cost_spikes AS (
+        SELECT DATE_TRUNC('hour', start_time) AS event_hour, 'COST_SPIKE' AS signal_type,
+               warehouse_name AS entity, credits_used AS magnitude
+        FROM SNOWFLAKE.ACCOUNT_USAGE.WAREHOUSE_METERING_HISTORY
+        WHERE start_time >= DATEADD('hour', -{hours_back}, CURRENT_TIMESTAMP())
+          AND credits_used > (
+              SELECT AVG(credits_used) + 2 * STDDEV(credits_used)
+              FROM SNOWFLAKE.ACCOUNT_USAGE.WAREHOUSE_METERING_HISTORY
+              WHERE start_time >= DATEADD('day', -14, CURRENT_TIMESTAMP())
+          )
+    ),
+    query_failures AS (
+        SELECT DATE_TRUNC('hour', start_time) AS event_hour, 'QUERY_FAILURE_BURST' AS signal_type,
+               warehouse_name AS entity, COUNT(*) AS magnitude
+        FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
+        WHERE start_time >= DATEADD('hour', -{hours_back}, CURRENT_TIMESTAMP())
+          AND execution_status = 'FAILED_WITH_ERROR'
+        GROUP BY event_hour, warehouse_name
+        HAVING COUNT(*) > 5
+    ),
+    ddl_changes AS (
+        SELECT DATE_TRUNC('hour', start_time) AS event_hour, 'DDL_CHANGE' AS signal_type,
+               database_name AS entity, COUNT(*) AS magnitude
+        FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
+        WHERE start_time >= DATEADD('hour', -{hours_back}, CURRENT_TIMESTAMP())
+          AND query_type IN ('ALTER', 'CREATE', 'DROP', 'ALTER_TABLE', 'CREATE_TABLE')
+        GROUP BY event_hour, database_name
+    ),
+    login_anomalies AS (
+        SELECT DATE_TRUNC('hour', event_timestamp) AS event_hour, 'LOGIN_ANOMALY' AS signal_type,
+               user_name AS entity, COUNT(*) AS magnitude
+        FROM SNOWFLAKE.ACCOUNT_USAGE.LOGIN_HISTORY
+        WHERE event_timestamp >= DATEADD('hour', -{hours_back}, CURRENT_TIMESTAMP())
+          AND is_success = 'NO'
+        GROUP BY event_hour, user_name
+        HAVING COUNT(*) > 3
+    ),
+    all_signals AS (
+        SELECT * FROM cost_spikes
+        UNION ALL SELECT * FROM query_failures
+        UNION ALL SELECT * FROM ddl_changes
+        UNION ALL SELECT * FROM login_anomalies
+    )
+    SELECT
+        event_hour,
+        COUNT(DISTINCT signal_type) AS correlated_signal_count,
+        LISTAGG(DISTINCT signal_type, ', ') WITHIN GROUP (ORDER BY signal_type) AS signals,
+        LISTAGG(DISTINCT entity, ', ') WITHIN GROUP (ORDER BY entity) AS affected_entities,
+        SUM(magnitude) AS total_magnitude
+    FROM all_signals
+    GROUP BY event_hour
+    HAVING correlated_signal_count >= 2
+    ORDER BY correlated_signal_count DESC, event_hour DESC
+    """
+```
+
+Display as a timeline in DBA Control Room's incident board. When 2+ signals co-occur, present them as one correlated incident instead of separate alerts.
+
+---
+
+### 5.3 — Query Fingerprint Clustering
+
+**Implementation:**
+
+```python
+def build_query_fingerprint_sql(days_back: int = 14) -> str:
+    """Group queries by parameterized template fingerprint."""
+    return f"""
+    SELECT
+        query_parameterized_hash AS fingerprint,
+        ANY_VALUE(query_text) AS sample_query_text,
+        COUNT(*) AS execution_count,
+        SUM(total_elapsed_time) / 1000 AS total_elapsed_sec,
+        AVG(total_elapsed_time) / 1000 AS avg_elapsed_sec,
+        SUM(bytes_scanned) / POWER(1024, 3) AS total_gb_scanned,
+        SUM(bytes_spilled_to_remote_storage) / POWER(1024, 3) AS total_remote_spill_gb,
+        COUNT(DISTINCT user_name) AS distinct_users,
+        COUNT(DISTINCT warehouse_name) AS distinct_warehouses,
+        MAX(warehouse_name) AS primary_warehouse
+    FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
+    WHERE start_time >= DATEADD('day', -{days_back}, CURRENT_TIMESTAMP())
+      AND query_parameterized_hash IS NOT NULL
+      AND execution_status = 'SUCCESS'
+    GROUP BY fingerprint
+    ORDER BY total_elapsed_sec DESC
+    LIMIT 50
+    """
+```
+
+Display in Workload Operations: "Top 50 Query Families by Resource Consumption" with drill-down into specific executions.
+
+---
+
+### 5.4 — One-Click Remediation (for Safe Actions)
+
+**Implementation:**
+
+For "Ready for Guided Execution" automation lane items:
+
+```python
+# utils/remediation.py
+
+SAFE_REMEDIATIONS = {
+    "idle_warehouse_autosuspend": {
+        "template": "ALTER WAREHOUSE {entity} SET AUTO_SUSPEND = {value};",
+        "preview_sql": "SHOW PARAMETERS IN WAREHOUSE {entity};",
+        "rollback_template": "ALTER WAREHOUSE {entity} SET AUTO_SUSPEND = {original_value};",
+        "requires_role": "SYSADMIN",
+        "audit_table": "OVERWATCH_REMEDIATION_LOG",
+    },
+    "warehouse_downsize": {
+        "template": "ALTER WAREHOUSE {entity} SET WAREHOUSE_SIZE = '{value}';",
+        "preview_sql": "SHOW WAREHOUSES LIKE '{entity}';",
+        "rollback_template": "ALTER WAREHOUSE {entity} SET WAREHOUSE_SIZE = '{original_value}';",
+        "requires_role": "SYSADMIN",
+        "audit_table": "OVERWATCH_REMEDIATION_LOG",
+    },
+}
+
+def execute_safe_remediation(
+    session, 
+    action_type: str, 
+    entity: str, 
+    value: str, 
+    original_value: str,
+    action_id: str,
+    approved_by: str,
+) -> dict:
+    """Execute a pre-approved safe remediation with audit trail."""
+    config = SAFE_REMEDIATIONS.get(action_type)
+    if not config:
+        return {"success": False, "error": "Unknown remediation type"}
+    
+    # Verify role
+    current_role = session.sql("SELECT CURRENT_ROLE()").collect()[0][0]
+    if config["requires_role"] not in current_role.upper():
+        return {"success": False, "error": f"Requires {config['requires_role']} role"}
+    
+    # Execute
+    sql = config["template"].format(entity=safe_identifier(entity), value=value)
+    rollback_sql = config["rollback_template"].format(
+        entity=safe_identifier(entity), original_value=original_value
+    )
+    
+    try:
+        session.sql(sql).collect()
+        # Audit log
+        session.sql(f"""
+            INSERT INTO DBA_MAINT_DB.OVERWATCH.OVERWATCH_REMEDIATION_LOG
+            (ACTION_ID, ACTION_TYPE, ENTITY, SQL_EXECUTED, ROLLBACK_SQL, EXECUTED_BY, APPROVED_BY, EXECUTED_AT)
+            VALUES ({sql_literal(action_id)}, {sql_literal(action_type)}, {sql_literal(entity)},
+                    {sql_literal(sql)}, {sql_literal(rollback_sql)}, CURRENT_USER(), 
+                    {sql_literal(approved_by)}, CURRENT_TIMESTAMP())
+        """).collect()
+        return {"success": True, "sql_executed": sql, "rollback_sql": rollback_sql}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+```
+
+UI: Show a "Fix Now" button only for items in "Ready for Guided Execution" lane. Click shows preview → confirmation → execute → verify.
+
+---
+
+### 5.5 — Compliance Scoring
+
+**Implementation:**
+
+```python
+# utils/compliance.py
+
+CIS_SNOWFLAKE_CONTROLS = [
+    {"id": "1.1", "control": "Network policy exists", "check_sql": "SHOW NETWORK POLICIES", "pass_condition": "row_count > 0"},
+    {"id": "1.2", "control": "MFA enabled for all admins", "check_sql": "SELECT COUNT_IF(has_mfa = FALSE) FROM ...", "pass_condition": "value == 0"},
+    {"id": "2.1", "control": "No PUBLIC grants on sensitive objects", "check_sql": "...", "pass_condition": "row_count == 0"},
+    {"id": "2.2", "control": "ACCOUNTADMIN not used for daily operations", "check_sql": "...", "pass_condition": "value < 5"},
+    {"id": "3.1", "control": "All data encrypted at rest", "check_sql": "...", "pass_condition": "always_true"},
+    {"id": "4.1", "control": "Audit logging enabled", "check_sql": "...", "pass_condition": "value == TRUE"},
+    # ... 20+ controls
+]
+
+def run_compliance_assessment(session) -> dict:
+    """Run CIS Snowflake Benchmark checks and return compliance percentage."""
+    results = []
+    for control in CIS_SNOWFLAKE_CONTROLS:
+        try:
+            df = session.sql(control["check_sql"]).collect()
+            passed = evaluate_condition(df, control["pass_condition"])
+        except Exception:
+            passed = None  # Could not evaluate
+        results.append({**control, "passed": passed})
+    
+    total = len(results)
+    passed = sum(1 for r in results if r["passed"] is True)
+    return {
+        "compliance_pct": round(100 * passed / total, 1),
+        "controls_passed": passed,
+        "controls_failed": sum(1 for r in results if r["passed"] is False),
+        "controls_unknown": sum(1 for r in results if r["passed"] is None),
+        "total_controls": total,
+        "details": results,
+    }
+```
+
+---
+
+## PHASE 6: UX Improvements (Supporting All Scores)
+
+### 6.1 — Reduce to 2 Themes
+
+Delete "corporate" / Henson theme. Keep `carbon` (dark) and `terminal` (light).
+
+### 6.2 — Add Sparklines to KPI Cards
+
+In `sections/shell_helpers.py`, modify `render_shell_kpi_row()`:
+```python
+def render_shell_kpi_row(metrics: list[dict], *, sparklines: dict[str, list[float]] = None):
+    """Render KPI card row with optional inline sparklines."""
+    for metric in metrics:
+        key = metric.get("key", "")
+        if sparklines and key in sparklines:
+            # Render inline SVG sparkline (7 data points, 60px wide, 20px tall)
+            points = sparklines[key][-7:]
+            svg = _build_sparkline_svg(points, width=60, height=20)
+            metric["sparkline_html"] = svg
+```
+
+### 6.3 — Progressive Disclosure Within Consolidated Sections
+
+For Workload Operations (which houses 6 sub-tools), implement a tab-based sub-navigation:
+```python
+WORKLOAD_TABS = ["Triage", "Query Diagnosis", "Tasks & Pipelines", "Contention"]
+selected_tab = st.tabs(WORKLOAD_TABS)
+```
+
+Only load the selected tab's data. Don't load all 6 sub-workflows simultaneously.
+
+### 6.4 — Colorblind-Safe Status Indicators
+
+Replace color-only status with color + icon + text:
+```python
+STATUS_INDICATORS = {
+    "healthy": {"color": "#22c55e", "icon": "✓", "label": "Healthy"},
+    "warning": {"color": "#f59e0b", "icon": "⚠", "label": "Warning"},
+    "critical": {"color": "#ef4444", "icon": "✗", "label": "Critical"},
+}
+```
+
+### 6.5 — Delete PPTX Export (Replace with PDF)
+
+Remove the 60+ lines of XML/ZIP PowerPoint generation. Replace with:
+```python
+def export_executive_summary_pdf():
+    """Generate a simple PDF from the current executive landing state."""
+    # Use matplotlib or reportlab for a clean 1-page summary
+    # OR simply provide a "Print this page" button that triggers window.print()
+    st.markdown('<button onclick="window.print()">Export PDF</button>', unsafe_allow_html=True)
+```
+
+---
+
+## PHASE 7: Remove Dead Code & Technical Debt
+
+### 7.1 — Kill List (Execute These Deletions)
+
+| Item | Action |
+|------|--------|
+| `DBA_CONTROL_PLANE_SECTION_BASELINE` | Delete from scorecards.py |
+| `operational_intelligence.py` as UI surface | Keep as internal dev roadmap file, remove from user-facing sections |
+| Lock stripes in query.py | Delete 64 Lock objects and all usage |
+| PPTX export in executive_landing.py | Delete `_PPTX_*` constants and XML generation |
+| "Henson" / corporate theme | Delete from theme.py |
+| `estimate_live_credits()` usage in cost displays | Replace with metering-based allocation everywhere |
+| Standalone section files that are fully subsumed | After Phase 2.1 restructure, delete originals |
+| `FORWARD_PLATFORM_CONTROLS` for unreleased features | Remove CoWork, Openflow, AI Agent MCP entries |
+
+---
+
+## Implementation Priority Order
+
+| Priority | Phase | Effort | Impact on Score |
+|----------|-------|--------|-----------------|
+| 1 | 1.1 (Credit accuracy) | 8h | Prod +8, Arch +5, Exec +5 |
+| 2 | 1.4 (Test suite) | 12h | Prod +12, Eng +8 |
+| 3 | 2.1 (Collapse sections) | 16h | Arch +10, Eng +8 |
+| 4 | 1.2 (SQL injection) | 6h | Prod +8 |
+| 5 | 4.1 (Predictive cost) | 8h | Exec +10, Innov +8 |
+| 6 | 5.1 (Measured savings) | 8h | Innov +10, Exec +5 |
+| 7 | 2.2 (Dynamic config) | 10h | Arch +8, Prod +5 |
+| 8 | 5.2 (Incident correlation) | 8h | Innov +8, Exec +5 |
+| 9 | 2.3 (Dynamic Tables) | 6h | Arch +8, Prod +5 |
+| 10 | 4.2 (SLA tracking) | 4h | Exec +6 |
+| 11 | 7.1 (Kill list) | 4h | Eng +5, Arch +3 |
+| 12 | 6.1-6.5 (UX) | 8h | Exec +5, all +3 |
+| 13 | 1.3 (Server-side scoping) | 6h | Prod +5 |
+| 14 | 5.4 (One-click remediation) | 8h | Innov +8 |
+| 15 | 5.5 (Compliance scoring) | 8h | Innov +6, Exec +4 |
+| 16 | 3.4 (CI/CD) | 4h | Eng +5, Prod +5 |
+| 17 | 5.3 (Query fingerprints) | 4h | Innov +5 |
+| 18 | 4.5 (Email digest) | 6h | Exec +5 |
+| 19 | 2.4 (Remove self-scores) | 2h | Arch +3, Prod +2 |
+| 20 | 3.1-3.3 (Eng cleanup) | 6h | Eng +5 |
+
+**Total estimated effort: ~140 hours**
+
+Priorities 1-6 alone (~60 hours) would move you from 62 overall to approximately 82-85. Completing all 20 items gets you to 95+ across all categories.
