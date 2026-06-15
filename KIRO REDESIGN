@@ -1,0 +1,148 @@
+
+Problem 1: "Not Loaded" is Unacceptable
+A monitoring dashboard that opens to "Not loaded" on every metric is dead on arrival. Nobody will trust it or come back. The design principle should be:
+
+Every page must show SOMETHING within 3 seconds of opening, even without marts.
+
+Recommendation:
+
+Current Behavior	Should Be
+Shell pages query mart → mart missing → "Not loaded"	Shell pages query ACCOUNT_USAGE directly with a 24h bounded window
+User must click "Load Investigation Detail"	Page auto-loads the top 5 KPIs on open (bounded, cheap queries)
+Mart is a prerequisite	Mart is an accelerator (faster/richer), not a gate
+The DBA Control Room shell should on first paint:
+
+Run 3 cheap queries (credits 24h, failed queries 24h, failed tasks 24h) against ACCOUNT_USAGE directly
+Show those numbers immediately
+THEN offer "Load Full Detail" for the expensive stuff
+Problem 2: Visual Design Recommendations
+What's wrong with the current layout:
+Too many empty cards — 9 signal lanes all showing "Not loaded" is visual noise. Don't render cards you can't fill.
+No clear hierarchy — Everything is the same size, same style. The eye doesn't know where to go first.
+Too much chrome, not enough data — "DBA Command Board" heading, "Data freshness" box, "Snapshot is company-level" caption, "DBA Control Room shows cached triage..." text — that's 4 lines of meta-information before any actual data.
+The signal lane board is the wrong component — Small cards with label/state/value work great when filled with data. They're terrible when empty. They look broken.
+What it should look like:
+DBA Control Room — First Paint (no mart required):
+
+┌─────────────────────────────────────────────────────────────┐
+│  SNOW_ACCOUNTADMINS · ALFA · ALL · Last 24h                 │
+├──────────┬──────────┬──────────┬──────────┬─────────────────┤
+│ Credits  │ Failed   │ Failed   │ Queued   │ Health          │
+│ 847.3    │ Queries  │ Tasks    │ Queries  │ Score           │
+│ ($3,118) │ 12       │ 3        │ 7        │ 82/100          │
+├──────────┴──────────┴──────────┴──────────┴─────────────────┤
+│                                                             │
+│  ⚠ 3 items need attention:                                  │
+│  1. WH_ALFA_TRANSFORM — 23% credit spike vs prior 24h      │
+│  2. TASK_EDW_DAILY_LOAD — failed 3x in last 6h             │
+│  3. 4 failed logins from unknown IP                         │
+│                                                             │
+│  [Load Full Detail]  [Morning Brief]  [Release Gate]        │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+Key principles:
+
+5 numbers above the fold — the KPIs use st.metric() in a 5-column row. Always filled, never empty.
+One ranked list — top 3 issues, plain text, no cards.
+Action buttons below — for loading expensive detail on demand.
+No empty signal lane boards. If you can't fill it, don't render it.
+Executive Landing — First Paint:
+┌──────────┬──────────┬──────────┬──────────┬──────────┬──────────┐
+│ Spend    │ Daily    │ Critical │ Pipeline │ Platform │ Actions  │
+│ vs Budg  │ Burn     │ Alerts   │ SLA      │ Score    │ in Queue │
+│ $12k /   │ $1,820   │ 2        │ 94.5%    │ 82/100   │ 7        │
+│ $50k     │ ↑12%     │          │          │          │ 3 high   │
+├──────────┴──────────┴──────────┴──────────┴──────────┴──────────┤
+│                                                                  │
+│  7-Day Spend Trend  [───────────/‾‾‾\────]                      │
+│                                                                  │
+│  Top Actions:                                                    │
+│  1. Resolve 2 critical alerts (DBA On-Call, today)               │
+│  2. Investigate WH_ALFA_TRANSFORM cost spike (+23%)              │
+│  3. Verify pipeline freshness for ALFA_EDW_PROD tables           │
+│                                                                  │
+│  [Copy Executive Summary]                                        │
+└──────────────────────────────────────────────────────────────────┘
+Specific Component Recommendations:
+Current	Replace With
+render_signal_lane_board() with 8-12 cards	st.columns(5) + st.metric() for top KPIs
+Empty "Not loaded" cards	Don't render. Show a single st.info("Load detail for more")
+render_shell_snapshot() 4-tuples	st.metric() row — native Streamlit, cleaner
+"Data freshness" box at top	Move to bottom or expander — it's meta, not decision data
+"Snapshot is company-level..." caption	Delete. Users don't care about internal implementation.
+Multiple st.caption() explanations	One line max. Put guidance in tooltip/help parameter.
+Design Rules I'd Enforce:
+No empty cards. If data isn't loaded, show one status line, not 9 empty placeholders.
+Numbers first, explanations never. If you need to explain what a metric means, the label is wrong.
+st.metric() for KPIs. It's native, accessible, and has built-in delta arrows.
+Maximum 5 top-level KPIs per page. More than that and nothing stands out.
+Action list > card grid for things that need human attention. A ranked list with owner + deadline > a grid of colorful boxes.
+Auto-load cheap data. Gate expensive data. 24h bounded ACCOUNT_USAGE queries cost <0.001 credits. Run them on page open. Gate the 90-day scans behind buttons.
+Remove all "developer documentation" from the UI. Source basis labels, freshness notes, confidence levels — these go in an expander at the bottom, not inline with the data.
+Summary
+The biggest UX win you can get right now:
+
+Make shells auto-query ACCOUNT_USAGE directly (skip the mart dependency)
+Replace the signal lane board with st.metric() rows that always have values
+Remove empty-state card grids entirely
+Put one ranked "attention needed" list under the KPIs
+
+
+Current Problem
+6 top-level sections that each hide 5-15 sub-workflows behind button clicks, mode selectors, and workflow pickers. A user looking for "why did my task fail" has to:
+
+Know to click "Workload Operations"
+Know to click "Load Full Detail"
+Know to select "Task graphs" from a workflow picker
+Then find the actual data
+That's 4 clicks to answer one question. Meanwhile, the sidebar shows 6 generic labels that don't tell you what you'll find inside.
+
+Proposed Architecture
+Principle: Every sidebar item should answer ONE question. The label should BE the question.
+
+SIDEBAR NAVIGATION:
+
+━━━ OVERVIEW ━━━
+  📊 Platform Status        ← "Is anything broken right now?"
+
+━━━ COST ━━━
+  💰 Credit Burn            ← "What are we spending?"  
+  📈 Forecasting            ← "What will we spend?"
+  🎯 Recommendations        ← "How do we save money?"
+
+━━━ OPERATIONS ━━━
+  ❌ Failures & Alerts      ← "What's failing?"
+  🔍 Query Performance      ← "What's slow?"
+  ⚙️ Tasks & Pipelines      ← "Are pipelines healthy?"
+
+━━━ GOVERNANCE ━━━
+  🔒 Security & Access      ← "Who has access to what?"
+  📋 Changes & Drift        ← "What changed recently?"
+
+━━━ DBA TOOLS ━━━
+  🛠️ Action Queue           ← "What's my to-do list?"
+  📝 Morning Brief          ← "What do I report to leadership?"
+11 sections, each with ONE clear purpose. No sub-workflow pickers. No mode selectors. No "Load Full Detail" gates on the primary view.
+
+Key Design Rules Per Section
+Section	Opens to	Data loaded on open	Gate only
+Platform Status	5 KPIs + attention list	Yes (auto, cheap)	Deep drill expanders
+Credit Burn	MTD spend + top cost drivers table	Yes (metering, 24h)	90-day history
+Forecasting	Trend chart + projection + anomalies	Yes (7-day trend)	90-day model
+Recommendations	Ranked action list with savings	Yes (from ACCOUNT_USAGE)	One-click fix execution
+Failures & Alerts	Failed queries + tasks + login failures	Yes (24h bounded)	Full error detail
+Query Performance	P95 latency + spill + queue + top slow queries	Yes (24h bounded)	Query history search
+Tasks & Pipelines	Task run status + failure count + SLA	Yes (24h bounded)	Task graph drill
+Security & Access	Dormant users + admin usage + MFA gaps	Yes (bounded)	Full privilege audit
+Changes & Drift	Recent DDL + schema changes	Yes (7-day bounded)	Full change history
+Action Queue	Open items by severity + owner	Yes (from OVERWATCH table)	Closure workflow
+Morning Brief	Auto-generated leadership summary	Yes (synthesized from above)	Export/copy
+What This Eliminates
+"Experience View" dropdown (everyone sees the same nav, role controls which items appear)
+Shell → Full Workspace pattern (every page loads its own data directly)
+"Load Investigation Detail" buttons as the primary interaction
+Workflow selector radio buttons inside sections
+"Not loaded" empty states
+Signal lane boards with 8-12 cards
+What About the Existing Full Workspace Sections?
+Keep them — but they become the detail drill accessible via expanders or "See more" links WITHIN the new focused sections. Not separate navigation destinations.
