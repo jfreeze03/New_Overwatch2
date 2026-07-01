@@ -1,0 +1,123 @@
+
+
+# OVERWATCH  — Full Rescan Analysis & Comprehensive Recommendations
+
+## Architectural Shift Summary
+
+**`app.py` has been decomposed into 14 root-level modules.** What was a ~1,500-line monolith is now:
+
+| Module | Responsibility |
+|---|---|
+| `shell.py` | Top-level render flow: startup, access checks, sidebar chrome, idle pause, dispatch |
+| `navigation.py` | Sidebar section selection, visible sections, transition state |
+| `route_registry.py` | Dependency-light canonical routes, aliases, retired-route state |
+| `runtime_state.py` | Centralized session-state key constants + `get/set/pop_state` |
+| `section_dispatch.py` | Lazy section loading (moved out of `sections/__init__.py`) |
+| `access_control.py` | Role capture, admin gating, Snowflake availability probing |
+| `filters.py`, `layout.py`, `refresh.py` | Global command bar, chrome, refresh contracts |
+| `perf_trace.py`, `performance.py`, `app_entry_timing.py` | Phase tracing, query budgets, entry timing |
+| `version.py`, `workflow_contracts.py` | Version metadata, workflow contracts |
+
+Other changes: nav regrouped to **MONITORING CORE / FINANCIAL CONTROL / OPERATIONS / SECURITY** (6 sections); `sections/dba_control_room/` is now a **package** (`__init__.py` + `render.py`); new `sections/base.py` (canonical `LazyPandas`/`lazy_util`), `utils/primitives.py` (dependency-light converters), `sections/triage_queue.py` (Mission Control queue built only from loaded session evidence); `pyproject.toml` added to artifacts; app repositioned as an **admin-only production monitoring app** (`ADMIN_ACCESS_ROLES`, `BUILD_LABEL = "Production monitoring app"`).
+
+---
+
+## What Was Fixed ✅
+
+- **✅ Lazy-isolation breaks in shells** — the offending shells (`workload_operations_shell`, `governance_security`, `alert_center_shell`) were removed entirely; routes now point at the workhorse modules, and `section_dispatch.py` preserves lazy loading. `sections/base.py` gives every section one canonical lazy-import toolkit.
+- **✅ `build_executive_command_board_sql` confirmed** at line 854 of `command_board.py` — the flagged export exists.
+- **✅ Nav/registry drift protection** — `assert tuple(PRIMARY_SECTIONS) == _ROUTE_PRIMARY_SECTION_TITLES` fails fast at startup if config drifts from `route_registry.py`. Exactly the kind of guard this codebase needed.
+- **✅ `SECTION_WORKSPACE_STATE_KEYS` duplication** — replaced by `SECTION_ROUTE_STATE` in `route_registry.py`, a single source of truth for per-route session-state seeding.
+- **✅ `runtime_state.py`** — state keys as named constants eliminates the magic-string sprawl flagged repeatedly.
+- **✅ `utils/primitives.py`** — canonical `safe_float`/`safe_int`, ending the private `_safe_float` duplication across shells.
+- **✅ `DEFAULT_ALERT_EMAILS`** remains a single corporate address with a governance comment. No regression.
+- **✅ `snowflake.yml`** manifest updated with all 14 root modules — no missing-artifact deploy risk.
+
+---
+
+## New Issues Found
+
+### 🔴 High
+
+**1. `CONNECTION_OPTIONAL_SECTIONS = set(ALL_SECTIONS)` in `navigation.py` neuters the connection gate**
+
+```python
+CONNECTION_OPTIONAL_SECTIONS = set(ALL_SECTIONS)
+
+def section_requires_connection(section: str) -> bool:
+    return normalize_nav_section(section) not in CONNECTION_OPTIONAL_SECTIONS
+```
+
+Every section is in the set, so `section_requires_connection()` always returns `False`. If `shell.py` uses this to decide whether to render `render_connection_empty_state()`, that path can never trigger at the section level. This may be intentional (every section now has its own offline-capable shell), but as written it's a constant function pretending to be a policy. Either delete the gate or populate the set honestly — a future maintainer will assume it does something.
+
+**2. `navigation.py` imports `sections.navigation` at module level**
+
+```python
+from sections.navigation import request_executive_landing_hydration, request_section_workspace
+```
+
+Root-level `navigation.py` loads on every app start and pulls `sections.navigation` immediately, which imports whatever that module imports. The whole point of `section_dispatch.py` is that the `sections` package stays cold until dispatch. One eager import at the root can drag section-adjacent dependencies into the startup path and quietly erode the first-paint gains everything else was built for. Move these two imports inside the functions that use them.
+
+### 🟡 Medium
+
+**3. `triage_queue.py` imports a private function cross-module**
+
+```python
+from sections.shell_helpers import _clean_display_text
+```
+
+Same anti-pattern fixed in `dba_control_room` several reviews ago: leading-underscore functions are module-private, and this coupling will silently break on a `shell_helpers` refactor. Promote `_clean_display_text` to a public name (in `shell_helpers` or `utils/primitives.py`).
+
+**4. Mixed section architecture — one package, five modules**
+
+`sections/dba_control_room/` is a package; the other five primary sections are single files (some 2,000+ lines). The package split is the right direction — but a half-migrated codebase is harder to navigate than either endpoint. Recommend a stated convention: any section exceeding ~800 lines migrates to the package layout (`__init__.py` re-exporting `render`, with `render.py`/`views.py`/`sql.py` inside).
+
+**5. Experience view / role-section system appears orphaned**
+
+`navigation.py`'s `resolve_visible_sections()` returns the full admin nav unconditionally — no `ROLE_SECTIONS`, no `EXPERIENCE_VIEW_SECTIONS` filtering. If the persona system was deliberately retired with the admin-only repositioning (consistent with `access_control.py` gating), then the config machinery for it (`EXPERIENCE_VIEW_SECTIONS`, `ROLE_EXPERIENCE_VIEWS`, `resolve_allowed_experience_views`, etc.) is now dead weight and should be removed or clearly marked retired. If it wasn't deliberate, visibility filtering is silently broken for non-admin roles.
+
+**6. Retired section files accumulating**
+
+`change_drift.py`, `account_health.py`, `warehouse_health.py`, etc. remain as retired-route targets (fine — they're still dispatched), but `query_workbench.py` is now on its **8th review** as a fully unreferenced orphan. With the repo growing root modules, dead files carry real navigation cost. Delete it, and consider an `archive/` convention for future retirements.
+
+### 🔵 Low
+
+**7.** `executive_landing_shell.py` imports `render_mission_control_queue` from `sections.triage_queue` at module level — acceptable since both are shell-tier and dependency-light, but it's the same pattern that caused trouble before; a comment justifying why it's safe would prevent a future "fix."
+
+**8.** `version.py`'s `__version__ = "2026.06.14-monitoring"` vs `OVERWATCH_SCHEMA_VERSION = "2026.06.13-..."` vs `CONFIG_VERSION`, `UTILS_EXPORT_VERSION`, `COMMAND_BOARD_VERSION` — five independent version strings now exist. Consider making `version.py` the single anchor with the others derived or checked against it at startup.
+
+---
+
+## Updated Ratings
+
+| Area | Grade | Change | Notes |
+|---|---|---|---|
+| Root architecture (`shell`/`navigation`/`route_registry`/`runtime_state`/`section_dispatch`) | **A** | NEW | The decomposition is disciplined, each module has one job, and the startup assertion protects the registry. This is the best structural work in the project. |
+| `route_registry.py` | **A** | NEW | Dependency-light, testable, single source of truth for routes, aliases, and route state. |
+| `access_control.py` / admin repositioning | **A−** | NEW | Coherent with CALLER mode. Gap: orphaned experience-view config (item 5). |
+| `perf_trace.py` / `performance.py` / query budgets | **A−** | NEW | Phase tracing + per-route query budgets is production-grade observability of the app itself. |
+| `sections/base.py` + `utils/primitives.py` | **A** | NEW | Ends the lazy-import and safe-cast duplication for good. |
+| `sections/triage_queue.py` | **B+** | NEW | Session-evidence-only queue is the right zero-query design; private cross-import is the gap. |
+| `navigation.py` | **B+** | NEW | Solid, but the neutered connection gate and eager `sections.navigation` import hold it back. |
+| Primary sections (6) | **A−** | — | Stable; ratings from the prior review carry over. Mixed module/package layout noted. |
+| `config.py` | **A−** | ↓ from A | Now cleanly delegates routing to the registry, but carries dead experience-view machinery. |
+| `utils/` layer overall | **A** | — | Stable and complete. |
+
+## Overall App Grade: **A−** (holding, with the strongest architecture yet)
+
+---
+
+## Comprehensive Recommendations (Priority Order)
+
+| # | Priority | Action |
+|---|---|---|
+| 1 | 🔴 | Fix or remove the `CONNECTION_OPTIONAL_SECTIONS` no-op gate in `navigation.py` |
+| 2 | 🔴 | Defer the `sections.navigation` imports in root `navigation.py` into function bodies |
+| 3 | 🟡 | Decide the fate of the experience-view/role-section config — remove or rewire |
+| 4 | 🟡 | Promote `_clean_display_text` to a public helper; ban private cross-module imports (a simple grep-based CI check would enforce this) |
+| 5 | 🟡 | Adopt the package layout convention and migrate the largest remaining single-file sections (`cost_contract`, `alert_center`) next |
+| 6 | 🟡 | Consolidate the five version strings around `version.py` with startup checks |
+| 7 | 🔵 | Delete `sections/query_workbench.py`; establish an archive convention |
+| 8 | 🔵 | **Graduation candidate:** the `route_registry.py` + startup-assertion pattern and the `runtime_state.py` named-key pattern are both clean, transplantable designs worth reusing in any future Streamlit project |
+
+The single biggest remaining deployment gap is unchanged from prior reviews: the mart setup SQL (`OVERWATCH_MART_SETUP.sql` or equivalent) that populates the fact tables and the `OVERWATCH_SCHEMA_MIGRATION` ledger still isn't in the repo. The deployment contract system is now excellent at *detecting* an undeployed mart — shipping the SQL that deploys it is the highest-leverage next commit.
