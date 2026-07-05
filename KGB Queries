@@ -1,0 +1,25 @@
+Based on KEBARR1's actual queries against DBA_MAINT_DB and ALFA_EDW_SAN, here's what they're actively monitoring:
+
+Credit/Compute Usage — Daily credit consumption from METERING_HISTORY, broken down by service type (compute vs. cloud services), with year-to-date trends.
+
+Login Security — Failed login counts in the last hour, login success/failure trends over 7 days, and suspicious login attempts (user, IP, client type, error details).
+
+Query Errors — Error code frequency from QUERY_HISTORY for queries that failed in the last 24 hours.
+
+Credit Comparison — Period-over-period credit usage (comparing 24h windows against prior 24h windows).
+
+Storage — Database storage and failsafe byte trends from DATABASE_STORAGE_USAGE_HISTORY.
+
+Cortex Code Usage — Combined Snowsight + IDE Cortex Code usage over last 30 days (tokens, credits by user).
+
+Role/Grant Auditing — Checking grants on TF_O_DEV_* roles in ALFA_EDW_SAN, looking at privilege assignments.
+
+Recommendation for OVERWATCH Dashboard
+The dashboard should include panels for:
+
+Credit burn rate (daily trend + YTD)
+Failed logins (last hour count + 7-day trend)
+Query failure rate (error codes, last 24h)
+Storage growth (database + failsafe bytes)
+Cortex Code adoption (user-level token/credit usage)
+Suspicious access (brute-force login attempts, unusual IPs)
