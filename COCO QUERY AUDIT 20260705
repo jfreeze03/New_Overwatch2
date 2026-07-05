@@ -1,0 +1,128 @@
+ACCOUNT_USAGE Query Pattern Audit
+Summary Statistics
+Metric	Value
+Total ACCOUNT_USAGE references	~460 across all app files
+Distinct ACCOUNT_USAGE views referenced	46
+Section files with direct FROM clauses	38 files
+Most-referenced view	QUERY_HISTORY — 150 occurrences
+Second most-referenced	WAREHOUSE_METERING_HISTORY — 62 occurrences
+View Reference Frequency (Top 15 by Volume)
+View	References	Sections Using It
+QUERY_HISTORY	150	query_analysis, cost_center_sql, cost_center_explain_view, cost_center_attribution_view, cost_center_chargeback_view, cost_center_user_leaderboard_view, contention_center, dba_control_room/data, dba_control_room/incidents, dba_tools_warehouse_settings, dba_tools_query_kill_view, dba_tools_qas_monitor_view, dba_tools_task_graph_control, detailed_diagnosis, query_investigation_root_cause, query_search
+WAREHOUSE_METERING_HISTORY	62	cost_center_sql, cost_contract_sql, dba_control_room/data, dba_control_room/incidents, dba_tools_warehouse_settings, warehouse_health_sql, warehouse_health_capacity
+LOGIN_HISTORY	33	security_access, security_posture_access_review, dba_control_room/data, dba_control_room/incidents
+USERS	28	cortex_monitor (×12 JOINs), security_posture_access_review, cost_contract_sql
+TASK_HISTORY	24	contention_center, task_management_sql, task_management_job_status_view
+METERING_HISTORY	18	cost_center_sql, cost_center_explain_view, dba_tools_cost_health_view
+GRANTS_TO_USERS	17	security_access, security_posture_access_review, security_posture_action_queue
+TABLES	12	pipeline_health, dba_tools_object_monitoring_view, dba_tools_data_compare
+CORTEX_CODE_SNOWSIGHT_USAGE_HISTORY	10	cortex_monitor (×8), cost_contract_sql, dba_tools_cortex_limits_view
+CORTEX_CODE_CLI_USAGE_HISTORY	10	cortex_monitor (×8), cost_contract_sql, dba_tools_cortex_limits_view
+COPY_HISTORY	10	pipeline_health, dba_tools_data_movement_view
+DATABASES	7	data_sharing, security_posture_access_review
+DATABASE_STORAGE_USAGE_HISTORY	6	storage_monitor
+TABLE_STORAGE_METRICS	5	storage_monitor
+LOCK_WAIT_HISTORY	5	contention_center
+Critical Finding: Redundant Query Patterns
+1. QUERY_HISTORY — Queried 150 times across 16 files
+This is by far the worst offender. The same underlying view is hit with slight variations in:
+
+cost_center_sql.py — warehouse cost attribution (lines 155, 232)
+cost_center_explain_view.py — user breakdown, query-type breakdown, hourly allocation (lines 167, 193, 220)
+cost_center_attribution_view.py — cost allocation by query type (line 104)
+cost_center_chargeback_view.py — chargeback split (line 121)
+cost_center_user_leaderboard_view.py — top users by cost (line 88)
+contention_center.py — queued/blocked queries, hot queries (lines 204, 317)
+dba_control_room/data.py — morning cockpit, failure triage, error rate (lines 346, 357, 652, 677, 700, 720, 737)
+query_analysis.py — performance deep-dive (lines 134, 780, 845, 855)
+query_investigation_root_cause.py — root cause drill (line 467)
+query_search.py — full-text query search
+detailed_diagnosis.py — slow query diagnosis (line 204)
+Pattern problem: At least 6 of these queries scan the same date range and warehouse filter with different GROUP BYs or WHEREs. They could be a single wide pre-aggregation queried differently.
+
+2. WAREHOUSE_METERING_HISTORY — 62 references across 7 files
+Cost center overview, cost contract cockpit, warehouse health, DBA morning cockpit all independently query the same hourly metering data.
+Multiple sections compute "daily credits burned by warehouse" independently.
+3. Cortex usage views — UNION ALL pattern duplicated 8 times
+In cortex_monitor.py, the pattern:
+
+sql
+SELECT ... FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_CODE_SNOWSIGHT_USAGE_HISTORY
+UNION ALL
+SELECT ... FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_CODE_CLI_USAGE_HISTORY
+appears at lines 478/482, 577/581, 1073/1077, 1277/1281, 1345/1349, 1478/1482, 1606/1610 — 7 duplicate UNION ALL blocks with slightly different SELECT lists or date ranges.
+
+4. USERS JOIN — repeated 12+ times
+LEFT JOIN SNOWFLAKE.ACCOUNT_USAGE.USERS u ON ... = u.USER_ID appears at least 12 times in cortex_monitor.py alone, plus in other files. The user dimension never changes.
+
+Query Budget Analysis
+The performance.py budget system reveals the actual render-time constraint:
+
+Context	Budget (queries allowed)
+First paint (page load)	1
+Warm first paint (revisit)	0
+Section route change	0
+Evidence click	1
+Admin click	3
+Decision bootstrap	20
+Account usage fallback	1
+This means the app intends to fire 0-1 queries on page load — but the architecture relies on the user clicking "Load Evidence" to trigger actual ACCOUNT_USAGE queries. The budget system is a workaround for the fact that queries are too expensive to pre-load.
+
+Key constraint: ACCOUNT_USAGE_TARGETED_SCAN_ALLOWED = False and COST_WORKBENCH_FIRST_PAINT_ALLOWED = False — these are explicitly blocking render-time queries because they can't afford the latency.
+
+Consolidation Opportunities
+Tier 1: Dynamic Tables (highest impact)
+Dynamic Table Name	Source Views	Refresh	Consumers
+DT_QUERY_DAILY_SUMMARY	QUERY_HISTORY	Hourly, lag=45min	cost_center, contention_center, dba_control_room, query_analysis, detailed_diagnosis
+DT_WAREHOUSE_DAILY_CREDITS	WAREHOUSE_METERING_HISTORY	Hourly	cost_center_sql, cost_contract, warehouse_health, dba_control_room
+DT_CORTEX_DAILY_USAGE	All 10 Cortex views + USERS	Hourly	cortex_monitor, cost_contract_sql, dba_tools_cortex_limits
+DT_LOGIN_SECURITY_DAILY	LOGIN_HISTORY + USERS	Hourly	security_access, security_posture, dba_control_room
+DT_TASK_STATUS_DAILY	TASK_HISTORY	Hourly	contention_center, task_management
+Estimated reduction: From ~150 live QUERY_HISTORY scans to ~5 reads against pre-aggregated DTs.
+
+Tier 2: Shared CTE / Materialized Session Cache
+Pattern	Current State	Fix
+USERS dimension JOIN	12+ duplicate JOINs in cortex_monitor alone	Load once into st.session_state["user_dimension"], join client-side
+Cortex UNION ALL	7 duplicate UNION blocks	Single function returning cached DataFrame, filtered per-caller
+Date-bounded QUERY_HISTORY	Same WHERE clause in 6 cost_center files	Single parameterized function with @st.cache_data(ttl=300)
+Tier 3: Eliminate Dead/Redundant Queries
+File	Issue
+contention_center.py lines 704-876	Duplicate metadata dicts referencing same views already queried at lines 93-483 — appears to be "source documentation" strings, not queries, but they bloat grep hits
+cortex_monitor.py	8 nearly-identical UNION ALL blocks could be 1 parameterized function
+dba_control_room/incidents.py line 269, 315	Hardcoded SELECT * FROM ... LIMIT 100 verification SQL — these are documentation, not executed live, but signal poor separation
+Render-Time Query Volume Estimate
+For a full section traversal (user visits all 6 sections and clicks "Load Evidence" on each):
+
+Section	Estimated Live Queries	Heaviest View
+Executive Landing	1-3	WAREHOUSE_METERING_HISTORY
+DBA Control Room	5-8	QUERY_HISTORY (×5)
+Cost & Contract	4-7	WAREHOUSE_METERING_HISTORY + QUERY_HISTORY
+Workload Operations	3-6	QUERY_HISTORY (×3)
+Security Monitoring	3-5	LOGIN_HISTORY + GRANTS_TO_USERS
+Cortex Monitor	4-7	Cortex views UNION ALL (×4)
+Worst case per session: ~36 live ACCOUNT_USAGE queries if a user exercises every evidence button. Each QUERY_HISTORY scan over 30 days can take 5-30 seconds on a small warehouse.
+
+Recommendations (Priority Order)
+P0 — Eliminate the QUERY_HISTORY bottleneck
+Create DT_QUERY_DAILY_SUMMARY as a dynamic table:
+
+text
+warehouse, user_name, query_type, execution_status, date
+→ query_count, total_execution_time_ms, total_credits_used, 
+  bytes_scanned, rows_produced, error_count
+Refresh every hour with 45-minute lag. This eliminates 80%+ of the QUERY_HISTORY direct scans.
+
+P1 — Consolidate Cortex monitoring into a single cached loader
+Replace 7 UNION ALL blocks in cortex_monitor.py with one @st.cache_data(ttl=600) function that returns the full Cortex usage DataFrame, then filter/group per-workflow.
+
+P2 — Pre-join the USERS dimension
+Load SNOWFLAKE.ACCOUNT_USAGE.USERS once at session start (it's tiny — typically <10K rows). Join in Python instead of repeating LEFT JOIN USERS in every SQL string.
+
+P3 — Dynamic table for WAREHOUSE_METERING_HISTORY daily rollup
+DT_WAREHOUSE_DAILY_CREDITS with warehouse_name, date, credits_used, credits_cloud, idle_minutes. Serves 7 files.
+
+P4 — Replace "Load Evidence" with stale-cache-first
+Use st.cache_data with a 5-minute TTL so pages render immediately with cached data, then offer "Refresh" to re-query. This eliminates the empty-state UX problem while still respecting query budgets.
+
+Bottom Line
+The app references 46 distinct ACCOUNT_USAGE views across 38 section files with ~460 total references. The single biggest problem is QUERY_HISTORY being independently queried ~150 times across 16 files with overlapping date ranges and filters. Five dynamic tables would eliminate approximately 70% of render-time query volume and convert the "click to load" pattern from a necessary performance workaround into an optional detail drill.
