@@ -1,0 +1,504 @@
+-- OVERWATCH implementation prompt for expert panel recommendations
+-- Co-authored with CoCo
+-- ============================================================================
+-- OVERWATCH IMPROVEMENT IMPLEMENTATION PROMPT
+-- ============================================================================
+-- 
+-- Context: You are working on OVERWATCH, a Snowflake DBA monitoring Streamlit
+-- application deployed in Snowsight with Container Runtime. The codebase lives
+-- in OVERWATCH-main/.overwatch_final/ and deploys to DBA_MAINT_DB.OVERWATCH.
+--
+-- The app has 176 section files, 293 total Python files, 64K lines of section
+-- code across 6 primary navigation sections: Executive Landing, DBA Control
+-- Room, Alert Center, Cost & Contract, Workload Operations, Security Monitoring.
+--
+-- An expert panel review identified these priority improvements. Implement them
+-- in the order specified below, treating each phase as a self-contained
+-- deliverable that can be validated independently.
+--
+-- ============================================================================
+-- PHASE 1: INFRASTRUCTURE FOUNDATION (Critical — Production Readiness)
+-- ============================================================================
+--
+-- GOAL: Eliminate the Critical-risk "no pre-aggregation layer" finding by
+-- creating dynamic tables that serve as the query backbone for all sections.
+-- This single change eliminates ~70% of render-time ACCOUNT_USAGE scans.
+--
+-- TASK 1.1: Create Dynamic Table Mart
+-- ------------------------------------
+-- Create the following dynamic tables in DBA_MAINT_DB.OVERWATCH with hourly
+-- refresh and a 45-minute lag. These replace 150+ direct ACCOUNT_USAGE hits:
+--
+-- DT_QUERY_DAILY_SUMMARY:
+--   Source: SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
+--   Grain: warehouse_name, user_name, query_type, execution_status, date
+--   Measures: query_count, total_execution_time_ms, total_credits_used,
+--             total_bytes_scanned, total_rows_produced, error_count,
+--             avg_compilation_time_ms, avg_execution_time_ms,
+--             p95_execution_time_ms, total_partitions_scanned,
+--             total_partitions_total, queue_wait_count
+--   Window: Rolling 90 days
+--   Consumers: cost_center, contention_center, dba_control_room,
+--              query_analysis, detailed_diagnosis (16 files)
+--
+-- DT_WAREHOUSE_DAILY_CREDITS:
+--   Source: SNOWFLAKE.ACCOUNT_USAGE.WAREHOUSE_METERING_HISTORY
+--   Grain: warehouse_name, date
+--   Measures: credits_used, credits_cloud, credits_used_compute,
+--             credits_used_cloud_services, idle_minutes_estimated
+--   Window: Rolling 90 days
+--   Consumers: cost_center_sql, cost_contract, warehouse_health,
+--              dba_control_room (7 files)
+--
+-- DT_CORTEX_DAILY_USAGE:
+--   Source: All 10 CORTEX_* usage views UNION ALL + USERS dimension
+--   Grain: service_type, user_name, date
+--   Measures: request_count, token_count, credits_used, model_name
+--   Window: Rolling 90 days
+--   Consumers: cortex_monitor, cost_contract_sql, dba_tools_cortex_limits (3 files)
+--
+-- DT_LOGIN_SECURITY_DAILY:
+--   Source: SNOWFLAKE.ACCOUNT_USAGE.LOGIN_HISTORY + USERS
+--   Grain: user_name, client_ip, reported_client_type, is_success, date
+--   Measures: login_count, failed_count, distinct_ips, first_seen, last_seen
+--   Window: Rolling 90 days
+--   Consumers: security_access, security_posture, dba_control_room (4 files)
+--
+-- DT_TASK_STATUS_DAILY:
+--   Source: SNOWFLAKE.ACCOUNT_USAGE.TASK_HISTORY
+--   Grain: database_name, schema_name, name, state, scheduled_date
+--   Measures: run_count, success_count, failed_count, cancelled_count,
+--             avg_duration_ms, total_duration_ms
+--   Window: Rolling 90 days
+--   Consumers: contention_center, task_management (3 files)
+--
+-- Implementation requirements:
+-- - Use CREATE OR REPLACE DYNAMIC TABLE with TARGET_LAG = '45 minutes'
+-- - Use WAREHOUSE = COMPUTE_WH (or a dedicated OVERWATCH_REFRESH_WH)
+-- - Add COMMENT on each table explaining its purpose
+-- - Create SECURE VIEWs on top for app consumption (row-level filtering)
+-- - Grant SELECT to OVERWATCH_APP_ROLE
+--
+-- TASK 1.2: Remove Hardcoded PII from Source Code
+-- -------------------------------------------------
+-- Create a settings table and migrate all hardcoded config:
+--
+-- CREATE TABLE IF NOT EXISTS DBA_MAINT_DB.OVERWATCH.OVERWATCH_SETTINGS (
+--   SETTING_KEY VARCHAR NOT NULL PRIMARY KEY,
+--   SETTING_VALUE VARIANT,
+--   UPDATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+--   UPDATED_BY VARCHAR DEFAULT CURRENT_USER()
+-- );
+--
+-- Migrate these values from config.py into OVERWATCH_SETTINGS:
+-- - DEFAULT_ALERT_EMAILS (currently hardcoded as jdees@alfains.com)
+-- - ALFA_WAREHOUSES tuple
+-- - TREXIS_WAREHOUSES tuple
+-- - ALL_WAREHOUSES tuple
+-- - ADMIN_ACCESS_ROLES tuple
+-- - Company names and patterns
+--
+-- Update config.py to read from this table at app startup with a
+-- @st.cache_data(ttl=300) wrapper. Fallback to current hardcoded values
+-- if the table doesn't exist (graceful degradation).
+--
+-- TASK 1.3: Add Row Access Policy to Mart Tables
+-- ------------------------------------------------
+-- Create a row access policy that restricts data visibility based on
+-- the user's active role. Only OVERWATCH admin roles should see all
+-- companies; other roles see only their assigned company.
+--
+-- CREATE OR REPLACE ROW ACCESS POLICY DBA_MAINT_DB.OVERWATCH.OVERWATCH_RAP
+-- AS (company_col VARCHAR) RETURNS BOOLEAN ->
+--   IS_ROLE_IN_SESSION('SNOW_ACCOUNTADMINS')
+--   OR IS_ROLE_IN_SESSION('SNOW_SYSADMINS')
+--   OR company_col = (
+--     SELECT SETTING_VALUE:"company"::VARCHAR
+--     FROM DBA_MAINT_DB.OVERWATCH.OVERWATCH_USER_SETTINGS
+--     WHERE USER_NAME = CURRENT_USER()
+--   );
+--
+-- Apply to all mart tables and dynamic tables with a COMPANY column.
+--
+-- ============================================================================
+-- PHASE 2: UX TRANSFORMATION (High — Executive Value)
+-- ============================================================================
+--
+-- GOAL: Eliminate the "Load Evidence" empty-state anti-pattern. Every page
+-- must render useful content immediately on navigation.
+--
+-- TASK 2.1: Implement Stale-Cache-First Pattern
+-- -----------------------------------------------
+-- For every section that currently shows an empty state until "Load Evidence"
+-- is clicked, implement the following pattern:
+--
+-- 1. On first paint, check if st.session_state has cached data for this
+--    section/scope combination
+-- 2. If YES: render immediately from cache, show "Last updated: X min ago"
+--    badge, and offer "Refresh" button
+-- 3. If NO: execute ONE lightweight summary query against the new dynamic
+--    tables (not ACCOUNT_USAGE) with @st.cache_data(ttl=300)
+-- 4. "Load Full Evidence" becomes a DETAIL drill, not the primary interaction
+--
+-- Target sections (priority order):
+-- - Executive Landing Overview (Platform Operating Score + 3 KPIs)
+-- - DBA Control Room Morning Cockpit (top 5 alerts + warehouse status)
+-- - Cost & Contract Overview (budget vs actual + burn rate number)
+-- - Alert Center (open count + critical count + overdue count)
+-- - Workload Operations (task success rate + pipeline health)
+-- - Security Monitoring (failed logins today + privilege changes)
+--
+-- Constraint: First paint must complete in <2 seconds on XS warehouse.
+-- This means ONE query against pre-aggregated dynamic tables, not multiple
+-- ACCOUNT_USAGE scans.
+--
+-- TASK 2.2: Add Cortex-Generated Executive Summary
+-- --------------------------------------------------
+-- On the Executive Landing Overview, add a natural-language paragraph
+-- generated by Cortex Complete that summarizes the current platform state.
+--
+-- Implementation:
+-- 1. Gather the Platform Operating Score components into a structured prompt
+-- 2. Call SNOWFLAKE.CORTEX.COMPLETE('llama3.1-70b', prompt) with a system
+--    message: "You are a Snowflake DBA platform health summarizer. Given the
+--    following metrics, produce a 2-3 sentence executive summary explaining
+--    current platform health, notable changes, and recommended actions."
+-- 3. Cache the result for 15 minutes
+-- 4. Display as the FIRST element on Executive Landing, before any charts
+-- 5. Include: cost trend (up/down/flat), alert severity distribution,
+--    warehouse utilization, task failure rate
+--
+-- Example output: "Platform health is GOOD. Credit consumption is 12% below
+-- budget with 18 days remaining in the contract period. Two warehouses
+-- (WH_ANALYTICS, WH_REPORTING) are oversized and could be reduced. Alert
+-- volume decreased 23% week-over-week with zero critical alerts open."
+--
+-- TASK 2.3: Implement "Panic Mode" for DBA Control Room
+-- ------------------------------------------------------
+-- Add a keyboard shortcut or prominent button that bypasses the Decision
+-- Workspace formality and renders raw operational data immediately:
+--
+-- - Top 10 currently running queries (by duration)
+-- - Any warehouses with queued queries
+-- - Failed tasks in the last hour
+-- - Active alerts (critical/high only)
+-- - Warehouse credit burn rate (last 4 hours vs average)
+--
+-- This should render in ONE query against a UNION ALL of dynamic tables,
+-- formatted as a single-screen "war room" view with no tabs, no expanders,
+-- no "load" buttons.
+--
+-- ============================================================================
+-- PHASE 3: NOTIFICATION & INTEGRATION (High — Operational Value)
+-- ============================================================================
+--
+-- GOAL: Replace email-only alerting with modern notification routing.
+--
+-- TASK 3.1: Add Slack Webhook Integration
+-- -----------------------------------------
+-- Create a notification integration table and procedure:
+--
+-- CREATE TABLE DBA_MAINT_DB.OVERWATCH.OVERWATCH_NOTIFICATION_CHANNELS (
+--   CHANNEL_ID VARCHAR DEFAULT UUID_STRING(),
+--   CHANNEL_TYPE VARCHAR NOT NULL, -- 'SLACK', 'TEAMS', 'EMAIL', 'PAGERDUTY'
+--   CHANNEL_NAME VARCHAR NOT NULL,
+--   WEBHOOK_URL VARCHAR,
+--   ROUTING_RULES VARIANT, -- JSON: {severity: [...], categories: [...], companies: [...]}
+--   IS_ACTIVE BOOLEAN DEFAULT TRUE,
+--   CREATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+-- );
+--
+-- CREATE OR REPLACE PROCEDURE DBA_MAINT_DB.OVERWATCH.SEND_ALERT_NOTIFICATION(
+--   P_ALERT_ID VARCHAR, P_SEVERITY VARCHAR, P_TITLE VARCHAR,
+--   P_MESSAGE VARCHAR, P_COMPANY VARCHAR, P_CATEGORY VARCHAR
+-- )
+-- RETURNS VARCHAR
+-- LANGUAGE PYTHON
+-- RUNTIME_VERSION = '3.11'
+-- PACKAGES = ('snowflake-snowpark-python', 'requests')
+-- HANDLER = 'send_notification'
+-- AS $$
+-- -- Route alert to matching channels based on routing rules
+-- -- Format message per channel type (Slack Block Kit, Teams Adaptive Card, etc.)
+-- -- Log delivery attempt to OVERWATCH_NOTIFICATION_LOG
+-- -- Return delivery status
+-- $$;
+--
+-- TASK 3.2: Add Scheduled Executive Digest
+-- ------------------------------------------
+-- Create a Snowflake Task that runs daily at 7:00 AM and generates an
+-- executive summary email/Slack message:
+--
+-- Content:
+-- - Platform Operating Score (today vs yesterday vs 7-day average)
+-- - Top 3 cost drivers (with % change)
+-- - Open critical/high alerts
+-- - Task pipeline success rate
+-- - Cortex-generated natural language summary
+--
+-- Implementation:
+-- - Task queries the dynamic tables (no ACCOUNT_USAGE at send time)
+-- - Formats as HTML email via notification integration
+-- - Also posts to a designated Slack channel
+-- - Includes deep-link back to OVERWATCH app for drill-through
+--
+-- ============================================================================
+-- PHASE 4: CONSOLIDATION & DEBT REDUCTION (Medium — Maintainability)
+-- ============================================================================
+--
+-- GOAL: Reduce codebase complexity without removing features.
+--
+-- TASK 4.1: Consolidate ACCOUNT_USAGE Query Layer
+-- -------------------------------------------------
+-- Create a single module: .overwatch_final/queries/account_usage.py
+--
+-- This module contains ALL functions that query ACCOUNT_USAGE views or
+-- dynamic tables. No section file should contain inline SQL against
+-- ACCOUNT_USAGE. Instead, sections call:
+--
+--   from queries.account_usage import (
+--       get_query_daily_summary,    # reads DT_QUERY_DAILY_SUMMARY
+--       get_warehouse_credits,      # reads DT_WAREHOUSE_DAILY_CREDITS
+--       get_cortex_usage,           # reads DT_CORTEX_DAILY_USAGE
+--       get_login_security,         # reads DT_LOGIN_SECURITY_DAILY
+--       get_task_status,            # reads DT_TASK_STATUS_DAILY
+--       get_query_detail,           # reads QUERY_HISTORY (for drill-through only)
+--   )
+--
+-- Each function:
+-- - Accepts filter parameters (company, environment, date_range, warehouse)
+-- - Returns a pandas DataFrame
+-- - Uses @st.cache_data(ttl=300) with a hash key based on parameters
+-- - Logs query execution via the existing performance telemetry
+-- - Respects query budget context
+--
+-- Migration approach:
+-- - Identify all 46 files with ACCOUNT_USAGE references
+-- - Extract SQL into the queries module as named functions
+-- - Replace inline SQL with function calls
+-- - Verify render behavior is unchanged
+--
+-- TASK 4.2: Merge Decision Workspace Files
+-- ------------------------------------------
+-- Consolidate the 8 decision_workspace_* files into 3:
+--
+-- decision_workspace.py (merge: state, scope, controls, target_filters)
+-- decision_workspace_render.py (merge: rendering, performance)
+-- decision_workspace_data.py (merge: bootstrap, fixtures)
+--
+-- The current 8-file split creates unnecessary import chains and coupling.
+-- The state/scope/controls/filters are all "workspace configuration" and
+-- belong together. Rendering and performance are both "render pipeline".
+-- Bootstrap and fixtures are both "data loading".
+--
+-- TASK 4.3: Consolidate Alert Center Files
+-- ------------------------------------------
+-- The Alert Center has grown to 16 files. Consolidate into:
+--
+-- alert_center.py (main router + summary view)
+-- alert_center_boards.py (boards + lanes — visual management)
+-- alert_center_case.py (case management lifecycle)
+-- alert_center_rules.py (rule config + category + native registry)
+-- alert_center_data.py (all SQL/data access for alerts)
+-- alert_center_diagnostics.py (admin diagnostics — hidden by default)
+--
+-- This reduces 16 files to 6 while preserving all functionality.
+--
+-- TASK 4.4: Remove Dead Code and Legacy Aliases
+-- -----------------------------------------------
+-- Delete:
+-- - All entries in ROUTE_ALIASES that map to canonical names unchanged
+-- - ABANDONED_PRIMARY_SECTION_TITLES constant
+-- - Theme "terminal" files (pick carbon as the only theme)
+-- - The theme picker UI (render_theme_picker function)
+-- - Any section file that has zero imports from other modules (orphans)
+--
+-- Validate with: grep -rl "ABANDONED_PRIMARY" to confirm zero references
+-- after removal.
+--
+-- ============================================================================
+-- PHASE 5: INNOVATION & DIFFERENTIATION (Medium — Competitive Edge)
+-- ============================================================================
+--
+-- GOAL: Add capabilities that no competing tool offers natively.
+--
+-- TASK 5.1: Implement Alert Intelligence Score
+-- ----------------------------------------------
+-- For each alert rule, track and display:
+-- - False positive rate (alerts acknowledged without action / total alerts)
+-- - Mean time to acknowledge (MTTA)
+-- - Mean time to resolve (MTTR)
+-- - Auto-resolve rate
+-- - Noise ratio (alerts suppressed or expired / total alerts)
+--
+-- Store in: DBA_MAINT_DB.OVERWATCH.OVERWATCH_ALERT_INTELLIGENCE
+-- Display in: Alert Center Admin tab as a health scorecard
+-- Auto-action: If an alert type has >80% false positive rate for 14 days,
+--              flag it for suppression review with a recommendation
+--
+-- TASK 5.2: Implement Differential Cost Attribution
+-- ---------------------------------------------------
+-- On the DBA Control Room Morning Cockpit and Cost Overview, automatically
+-- show: "Compared to the same day last week, costs are [X]% [higher/lower].
+-- The top 3 contributors to this change are: [query/warehouse/user details]."
+--
+-- Implementation:
+-- - Query DT_QUERY_DAILY_SUMMARY for today vs same-day-last-week
+-- - Compute delta by warehouse and query_type
+-- - Rank by absolute credit delta
+-- - Display as a colored callout (green=savings, red=increase) with
+--   drill-through to the specific warehouses/users
+--
+-- No click required. This renders automatically on first paint.
+--
+-- TASK 5.3: Implement Self-Healing Recommendations
+-- --------------------------------------------------
+-- In Warehouse Health Advisor, for each recommendation, add a one-click
+-- action button that executes the fix:
+--
+-- - "Suspend idle warehouse" → ALTER WAREHOUSE {name} SUSPEND
+-- - "Resize oversized warehouse" → ALTER WAREHOUSE {name} SET
+--   WAREHOUSE_SIZE = '{recommended_size}'
+-- - "Enable auto-suspend" → ALTER WAREHOUSE {name} SET
+--   AUTO_SUSPEND = {recommended_seconds}
+-- - "Resume suspended warehouse" → ALTER WAREHOUSE {name} RESUME
+--
+-- Requirements:
+-- - Require confirmation dialog before execution
+-- - Log all actions to OVERWATCH_ACTION_LOG with user, timestamp, SQL, result
+-- - Verify the executing role has ALTER WAREHOUSE privilege
+-- - Show before/after credit impact estimate
+-- - Support undo within 5 minutes (revert to previous setting)
+--
+-- TASK 5.4: Implement Cortex Forecast for Budget Projection
+-- -----------------------------------------------------------
+-- In Cost & Contract, add a "Projected End-of-Period" forecast:
+--
+-- 1. Use SNOWFLAKE.ML.FORECAST on DT_WAREHOUSE_DAILY_CREDITS to project
+--    remaining days in the contract/budget period
+-- 2. Show: "At current trajectory, you will consume X credits by period end.
+--    Budget is Y. You are projected to be [under/over] by Z credits."
+-- 3. Display as a line chart with actual (solid) + forecast (dashed) + budget
+--    (horizontal line)
+-- 4. If projected to exceed budget, auto-generate an alert
+-- 5. Refresh forecast daily via Snowflake Task
+--
+-- ============================================================================
+-- PHASE 6: TESTING & OBSERVABILITY (Medium — Sustainability)
+-- ============================================================================
+--
+-- GOAL: Make the codebase maintainable beyond the original developer.
+--
+-- TASK 6.1: Create Core Test Harness
+-- ------------------------------------
+-- Add a tests/ directory with pytest fixtures that mock Snowflake connections.
+-- Write tests for the 10 most critical render paths:
+--
+-- 1. Executive Landing renders with empty session state
+-- 2. Executive Landing renders with cached Platform Summary
+-- 3. DBA Control Room Morning Cockpit renders from DT data
+-- 4. Cost & Contract renders budget vs actual from DT data
+-- 5. Alert Center renders open alerts from mart table
+-- 6. Section navigation transitions without state corruption
+-- 7. Theme injection produces valid CSS
+-- 8. Query budget enforcement blocks over-budget queries
+-- 9. Decision Workspace brief loads without error
+-- 10. Idle pause activates after configured timeout
+--
+-- Use unittest.mock to patch snowflake.connector and return sample DataFrames.
+-- Target: tests pass in <30 seconds with no Snowflake connection required.
+--
+-- TASK 6.2: Add App Self-Monitoring
+-- -----------------------------------
+-- Track and display in Executive Admin:
+-- - App render time (p50, p95, p99) per section
+-- - Queries executed per session (actual vs budget)
+-- - Session state key count (detect bloat)
+-- - Section visit frequency (identify dead pages)
+-- - Error rate per section
+--
+-- Store in: DBA_MAINT_DB.OVERWATCH.OVERWATCH_APP_TELEMETRY
+-- Display as: sparklines in Executive Admin + daily digest inclusion
+-- Alert on: render time p95 > 10s or error rate > 5%
+--
+-- TASK 6.3: Session State Schema Validation
+-- -------------------------------------------
+-- Create a module that defines the expected session state schema:
+--
+-- SESSION_STATE_SCHEMA = {
+--   "NAV_SECTION": {"type": str, "required": True, "default": "Executive Landing"},
+--   "active_theme": {"type": str, "required": True, "default": "carbon"},
+--   "executive_landing_snapshot": {"type": dict, "required": False},
+--   ...
+-- }
+--
+-- On app startup, validate that no unexpected keys exist (warn if >200 keys),
+-- no required keys are missing, and no keys have incorrect types. Log
+-- violations to app telemetry. This prevents the "impossible to reproduce
+-- UI glitch from stale session state" class of bugs.
+--
+-- ============================================================================
+-- PHASE 7: NATIVE APP PACKAGING (Low priority — Product Positioning)
+-- ============================================================================
+--
+-- GOAL: Transform OVERWATCH from a single-account Streamlit app into a
+-- distributable Snowflake Native App that works across accounts.
+--
+-- TASK 7.1: Separate Mart Logic from Presentation
+-- -------------------------------------------------
+-- Split the codebase into:
+-- - overwatch-core/ (SQL: dynamic tables, procedures, tasks, alerts)
+-- - overwatch-ui/ (Python/Streamlit: all .py section files)
+--
+-- overwatch-core becomes the Native App package. It:
+-- - Creates the dynamic table mart in the consumer's account
+-- - Deploys the scheduled tasks for refresh and alerting
+-- - Exposes SECURE VIEWs for the UI to consume
+-- - Requires no Streamlit — it's pure SQL + tasks
+--
+-- overwatch-ui remains a Streamlit app that reads from the Native App's
+-- shared database. It can be deployed separately or bundled.
+--
+-- TASK 7.2: Multi-Account Federation
+-- ------------------------------------
+-- Add an org-level view that aggregates Platform Operating Scores from
+-- multiple accounts (using Snowflake data sharing or replication):
+--
+-- - Each account's OVERWATCH instance publishes its daily summary to a
+--   shared database
+-- - A central "OVERWATCH Federation" dashboard shows all accounts
+-- - Drill-through navigates to the account-specific app
+-- - Org-level KPIs: total credit consumption, worst-performing account,
+--   cross-account alert correlation
+--
+-- ============================================================================
+-- IMPLEMENTATION NOTES
+-- ============================================================================
+--
+-- Priority order: Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5 → Phase 6 → Phase 7
+--
+-- Phase 1 unblocks Phase 2 (dynamic tables enable fast first paint).
+-- Phase 3 is independent and can be parallelized with Phase 2.
+-- Phase 4 is pure refactoring — do it when you have a stable checkpoint.
+-- Phase 5 requires Phase 1 (dynamic tables) and Phase 2 (auto-render).
+-- Phase 6 can start anytime but benefits from Phase 4 consolidation.
+-- Phase 7 requires Phase 1 + Phase 4 (clean separation of mart vs UI).
+--
+-- Estimated scope:
+-- Phase 1: Foundation      — 5 dynamic tables + settings table + RAP
+-- Phase 2: UX Transform    — Modify 6 section entry points + add Cortex call
+-- Phase 3: Notifications   — 1 table + 1 procedure + 1 task + Slack formatter
+-- Phase 4: Consolidation   — Merge/delete ~30 files, create 1 query module
+-- Phase 5: Innovation      — 4 new features, each self-contained
+-- Phase 6: Testing         — pytest harness + telemetry table + schema validator
+-- Phase 7: Native App      — Major restructure, only after Phases 1-4 complete
+--
+-- Success criteria:
+-- - Phase 1 complete: zero direct ACCOUNT_USAGE queries on first paint
+-- - Phase 2 complete: Executive Landing renders useful data in <2 seconds
+-- - Phase 3 complete: alerts reach Slack within 60 seconds of detection
+-- - Phase 4 complete: section file count drops from 176 to <140
+-- - Phase 5 complete: 3 features that competitors cannot replicate
+-- - Phase 6 complete: 70%+ code coverage on critical paths
+-- - Phase 7 complete: OVERWATCH deploys to a second Snowflake account
+-- ============================================================================
