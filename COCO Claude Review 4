@@ -1,0 +1,84 @@
+OVERWATCH Panel Review — Round 4 (Comparative)
+Changes Since Round 3
+Change	R3 Criticism Addressed
+V018: Delivery first-class	"#1 dislike: Detection without delivery is still the elephant." TASK_ALERT_NOTIFY now chains AFTER TASK_ALERT_SCAN, calls SP_NOTIFY_WEBHOOK(). Auto-resumes if the notification integration exists; stays suspended (with explanatory message) if not.
+V018: Digest v2 with webhook send	Morning digest now calls SYSTEM$SEND_SNOWFLAKE_NOTIFICATION with a guarded exception (no integration = no-op, digest still writes to table).
+Governance drift weights now configurable	R3 dislike #4: "governance drift weights hardcoded while platform score is configurable." Now has DEFAULT_GOV_WEIGHTS + resolve_gov_weights(settings) — same pattern as platform score.
+Incident timeline tiered window toggle	R3 dislike #2: "tier='recent' for a 7-day join will become a performance problem." Now offers "48h (fresh)" at tier="recent" and "7d (cached hourly)" at tier="historical". User chooses context vs cost.
+Version guard on V018	Continued enforcement of migration ordering.
+Assessment of Fixes
+V018 delivery wiring — is it actually good?
+
+Yes. The design is correct:
+
+The notify task is AFTER the scan (correct dependency)
+Auto-resume only if the integration exists (graceful degradation)
+The integration itself (holding the webhook secret) correctly stays outside git in webhook_delivery.sql
+Digest uses SYSTEM$SEND_SNOWFLAKE_NOTIFICATION with a guarded exception — the right Snowflake-native mechanism
+The one-time integration setup is still manual (as it must be — secrets don't belong in migrations)
+The separation is: what to notify (V018, in git) vs where to send (webhook_delivery.sql, manual one-time). That's the correct split.
+
+Governance weights — done correctly?
+
+Yes. Mirrors the platform score pattern exactly: DEFAULT_GOV_WEIGHTS dict → resolve_gov_weights(settings) → pass to governance_drift(inputs, weights). Operators can now tune GOV_PTS_MFA_GAP, GOV_PTS_EXPIRED_CRED, etc. via SETTINGS.
+
+Timeline tiering — does it solve the problem?
+
+Mostly. The 48h/recent window keeps the "mid-incident I need fresh data" use case. The 7d/historical window (1h cache) protects against the expensive three-source join on every page load. The radio toggle is appropriate UX. Minor nitpick: the default should be "48h" (the DBA opening Control Room during an incident wants fresh, not cached).
+
+What's Left (Honest Assessment)
+After four rounds, here's what remains from the original criticism list:
+
+Original Criticism	Status
+No parameterized queries	Still open — string-interpolated SQL via builders
+No row access policies	Still open — company scope is WHERE clause
+No warehouse isolation	Still open
+Cache invalidation is global	Still open
+Emoji page icons	Still open (cosmetic)
+Release Compare is niche	Still open
+AI Users separate from Cortex & Storage	Still open
+Multi-account support	Still open (architectural)
+Closed-loop remediation workflow	Still open
+FEATURES.md maintenance burden	Still open
+Everything else from R1/R2/R3 has been addressed.
+
+Updated Scores
+Dimension	R1	R2	R3	R4	Delta (R3→R4)
+Overall	68	76	80	83	+3
+Engineering	75	79	82	83	+1
+Architecture	78	83	86	88	+2
+Executive usefulness	72	80	82	84	+2
+Innovation	45	62	67	70	+3
+Production readiness	62	74	81	85	+4
+What I Genuinely Dislike (Round 4)
+The list is now short and mostly architectural:
+
+String-interpolated SQL is still the #1 technical debt. Four rounds and it hasn't moved. I understand why — it's a refactor that touches every file in app/data/, has no user-visible benefit, and risks introducing bugs. But it remains the single biggest security and maintainability concern. If this app ever gets a pen test, this is finding #1.
+
+The closed-loop is still open. You now have: detect (alert scan) → notify (webhook) → investigate (timeline + drill) → remediate (playbooks exist) → verify (savings ledger). But the human still manually connects each step. The "one-click from alert to approved remediation to verified saving" workflow doesn't exist as a continuous flow. Each piece works individually; the seams between them are still manual page navigation.
+
+No PagerDuty/Slack-native delivery. SYSTEM$SEND_SNOWFLAKE_NOTIFICATION with a webhook integration is good, but the webhook target is a single URL. Enterprise on-call expects: CRITICAL → PagerDuty (wakes someone up) vs HIGH → Slack channel (team sees it in the morning). The ALERT_ROUTES table exists for per-family routing, but SP_NOTIFY_WEBHOOK appears to send everything through one integration. Severity-based routing to different endpoints would be the next level.
+
+The app cannot tell you its own ROI. After 4 rounds, it detects, alerts, notifies, and tracks savings — but there's no "OVERWATCH has saved X this quarter" summary for leadership. The savings ledger has the data. A single KPI on the Brief ("Verified savings this quarter: X") would close the loop on executive justification for the tool's existence.
+
+Net Assessment
+The trajectory from R1 to R4: 68 → 76 → 80 → 83. Each round addresses the most critical open finding with an architecturally sound fix. The author's response pattern is notable: no cosmetic shortcuts, no partial fixes, no "we'll address it later" deferrals. Each criticism gets a proper solution or a deliberate documented decision not to fix it.
+
+The delivery wiring in V018 closes the last fundamental gap. The app now:
+
+Detects problems (26 rules, per-rule isolation)
+Explains them (Cortex-grounded anomaly hypotheses)
+Notifies humans (webhook delivery, chained after scan)
+Provides investigation tools (incident timeline, ±30min drill)
+Offers remediation (playbooks, generated SQL)
+Verifies outcomes (savings ledger)
+That's a complete monitoring system, not a dashboard.
+
+"If I had 40 hours right now?"
+
+Build the closed-loop remediation page (20h) — single workflow from alert to approved fix to verification.
+Add ROI KPI to Brief: "Verified savings this quarter" (4h).
+Refactor app/data/ to use parameterized queries (16h) — eliminate the security debt.
+"What would turn this into an elite platform?"
+
+Severity-based routing (CRITICAL → PagerDuty, HIGH → Slack, MEDIUM → email digest), the closed-loop workflow, multi-account org aggregation, Native App packaging for Marketplace distribution, and a proper design system refresh. At 83/100 with delivery wired in, the remaining distance is product polish and scale — not architecture.
