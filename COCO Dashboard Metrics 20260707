@@ -1,0 +1,155 @@
+High-Impact Monitoring Metrics
+1. Compute Cost (your biggest expense)
+Your account consumed ~2,485 credits on warehouses in the last 30 days, with WH_TRXS_TRANSFORM alone consuming 1,480 credits (60% of warehouse spend). Key metrics to track:
+
+Credits by warehouse per day — spot spikes early (WAREHOUSE_METERING_HISTORY)
+Cloud services overage — WH_TRXS_TRANSFORM has 442 cloud services credits, which is unusually high relative to compute (suggests many small queries or metadata-heavy operations)
+Query concurrency and queuing — from WAREHOUSE_LOAD_HISTORY
+Idle warehouse time — via WAREHOUSE_EVENTS_HISTORY (suspend/resume patterns)
+2. Cortex AI / Code Costs
+CORTEX_CODE_SNOWSIGHT used 706 credits — your second-largest cost category. Track:
+
+Daily Cortex Code usage trends (CORTEX_CODE_SNOWSIGHT_USAGE_HISTORY)
+Cortex AI function token consumption (CORTEX_AI_FUNCTIONS_USAGE_HISTORY)
+3. Container Services
+175 credits on SPCS. Monitor via SNOWPARK_CONTAINER_SERVICES_HISTORY for:
+
+Node-hours and idle compute pools
+Service uptime vs actual utilization
+4. Storage Growth
+You're at 7.4 TB of active storage and growing (~600 GB increase in 4 days). Track:
+
+Daily storage growth rate (STORAGE_USAGE)
+Failsafe bytes (dropping from 1 TB to 49 GB suggests recent table drops or retention changes)
+Stage storage (174 GB)
+5. Security & Governance
+With Trust Center consuming 53 credits, you're already investing here. Add:
+
+Failed login attempts (LOGIN_HISTORY)
+Privilege escalation events (GRANTS_TO_ROLES)
+Cost Categories to Watch (Priority Order)
+Category	30-Day Credits	% of Total	Risk
+Warehouses	2,485	72%	High — one warehouse dominates
+Cortex Code	707	21%	Medium — growing AI usage
+Container Services	175	5%	Medium — can spike with idle pools
+Trust Center	53	2%	Low — fixed overhead
+Storage (TB-based billing)	—	Separate	Medium — 7.4 TB growing fast
+Specific Concerns for Your Account
+WH_TRXS_TRANSFORM cloud services ratio — 30% of its credits are cloud services (normal is <10%). This suggests excessive metadata operations, tiny queries, or compilation overhead. Investigate query patterns.
+Storage acceleration — 600 GB growth in 4 days could signal unbounded table growth or missing retention policies.
+Cortex Code adoption — at 706 credits/month, ensure this is providing proportional value.
+Would you like me to build any of these into actual dashboard queries, or dive deeper into a specific cost area?
+
+what are some other metrics?
+
+Thinking complete
+Let me pull more data to surface additional metrics relevant to your account.
+
+Ran 4 queries
+
+
+I have enough from the earlier queries and the successful one to expand on additional metrics. Here's a broader set beyond what I already covered:
+
+Query Performance Metrics
+Spilling queries — queries that spill to local/remote storage indicate warehouses are undersized (QUERY_HISTORY — filter on BYTES_SPILLED_TO_*)
+Partition scan efficiency — ratio of PARTITIONS_SCANNED / PARTITIONS_TOTAL reveals missing clustering keys
+Compilation time vs execution time — high compilation time suggests overly complex SQL or excessive metadata
+Query queuing — time spent waiting for warehouse resources (WAREHOUSE_LOAD_HISTORY)
+Failed query rate — error patterns by user or warehouse
+Pipeline Reliability Metrics
+Task failure rate — failed vs succeeded in TASK_HISTORY
+Dynamic table refresh lag — how far behind target freshness (DYNAMIC_TABLE_REFRESH_HISTORY)
+Pipe throughput — files loaded per hour, latency from staging to availability (PIPE_USAGE_HISTORY)
+Copy history errors — failed file loads (COPY_HISTORY)
+User & Session Metrics
+From your data, notable patterns:
+
+SYSTEM ran 4.7M queries with 446 cloud services credits — likely automated processes (tasks, internal operations)
+6 Streamlit apps (STPLAT* users) are generating 400K+ queries each — monitor their efficiency
+TERRAFORM_AUTOMATION at 224K queries — track drift between planned and actual runs
+CROWDSTRIKE_MONITOR at 180K queries — security integration overhead
+Key metrics:
+
+Queries per user per day — detect runaway automations
+Login failures by user/IP — security (LOGIN_HISTORY)
+Session duration anomalies — unusually long or short sessions
+Data Freshness & Quality
+Table DML frequency — are critical tables being updated on schedule? (TABLE_DML_HISTORY)
+Data metric function results — if you use DMFs, track pass/fail rates (DATA_METRIC_FUNCTION_REFERENCES)
+Replication lag — for replicated databases (REPLICATION_GROUP_REFRESH_HISTORY)
+Storage Efficiency
+Time Travel bytes — are tables retaining excessive history? (TABLE_STORAGE_METRICS)
+Stale tables — tables with no DML in 90+ days still consuming storage
+Stage bloat — unprocessed files sitting in stages (STAGE_STORAGE_USAGE_HISTORY)
+Serverless & Managed Costs (often overlooked)
+Auto-clustering credits — 1.5 credits/month now, but can spike with new clustering keys (AUTOMATIC_CLUSTERING_HISTORY)
+Search optimization — track ROI vs credits consumed (SEARCH_OPTIMIZATION_HISTORY)
+Query acceleration — minimal now (0.02 credits), but monitor if enabled on more warehouses
+Snowpipe streaming — if using Kafka connectors (SNOWPIPE_STREAMING_CLIENT_HISTORY)
+Operational Health
+Lock wait events — contention between concurrent operations (LOCK_WAIT_HISTORY)
+External access calls — API egress and latency (EXTERNAL_ACCESS_HISTORY)
+Trust Center findings — security vulnerabilities detected (TRUST_CENTER_FINDINGS)
+Summary: A "Top 10" Dashboard
+If I had to pick the 10 most impactful metrics for your specific account:
+
+Daily credits by warehouse (focus on WH_TRXS_TRANSFORM)
+Cloud services credit ratio per warehouse
+Cortex Code daily credit burn
+SPCS node-hours and idle time
+Storage growth rate (TB/day)
+Streamlit app query volume and efficiency
+Task/pipeline failure rate
+Query spilling frequency
+Failed logins and security events
+Stale table storage waste
+
+Here are 20 additional metrics to consider for your monitoring dashboard:
+
+Access & Governance
+Privilege grants per day — sudden spikes in GRANTS_TO_ROLES or GRANTS_TO_USERS may indicate unauthorized access expansion
+Roles with ACCOUNTADMIN usage — track how often ACCOUNTADMIN is actively used vs. delegated roles (QUERY_HISTORY filtered by role)
+Masking policy invocations — how often masked columns are queried, and by whom (POLICY_REFERENCES + ACCESS_HISTORY)
+Row access policy denials — queries silently returning fewer rows than expected due to RLS
+Unused roles — roles granted but never assumed in 90+ days (LOGIN_HISTORY cross-referenced with GRANTS_TO_USERS)
+Data Movement & Integration
+External function latency — response time of external API integrations (EXTERNAL_FUNCTIONS_HISTORY)
+Data sharing consumption — how much shared data is being queried by consumers (DATA_TRANSFER_HISTORY)
+Snowpipe file notification lag — time between file arrival and load completion (COPY_HISTORY)
+Cross-region data transfer volume — GB transferred between regions, billed separately (DATA_TRANSFER_HISTORY)
+Materialized view maintenance credits — hidden cost of keeping MVs refreshed (MATERIALIZED_VIEW_REFRESH_HISTORY)
+Efficiency & Waste
+Warehouse auto-suspend effectiveness — average time from last query to suspend (WAREHOUSE_EVENTS_HISTORY). Your WH_TRXS_TRANSFORM may benefit from a tighter suspend policy
+Repeat/duplicate queries — identical query hashes run multiple times, suggesting missing caching or redundant pipelines (QUERY_HISTORY grouped by QUERY_PARAMETERIZED_HASH)
+Queries scanning >80% of table partitions — full table scans that should be optimized (QUERY_HISTORY with PARTITIONS_SCANNED/PARTITIONS_TOTAL > 0.8)
+Remote spilling ratio — remote spills are far more expensive than local; track BYTES_SPILLED_TO_REMOTE_STORAGE separately
+Result cache hit rate — percentage of queries served from cache without warehouse spin-up (QUERY_HISTORY where BYTES_SCANNED = 0 and results returned)
+Operational Reliability
+Schema change frequency — DDL operations on production schemas, detecting unplanned changes (QUERY_HISTORY filtered by QUERY_TYPE IN ('CREATE_TABLE', 'ALTER_TABLE', 'DROP_TABLE'))
+Long-running queries (>5 min) — count per day, trend over time, which users/warehouses
+Concurrent query peaks — max simultaneous queries per warehouse per hour, to right-size multi-cluster configs
+Network policy violations — blocked connection attempts from disallowed IPs (LOGIN_HISTORY with IS_SUCCESS = 'NO' and ERROR_MESSAGE LIKE '%network%')
+Object dependency depth — views built on views built on views; deep chains are fragile and slow (OBJECT_DEPENDENCIES)
+Quick Reference: Where Each Metric Lives
+#	Metric	Primary View
+1	Privilege grants/day	GRANTS_TO_ROLES
+2	ACCOUNTADMIN usage	QUERY_HISTORY
+3	Masking policy hits	ACCESS_HISTORY
+4	Row access denials	ACCESS_HISTORY
+5	Unused roles	LOGIN_HISTORY + GRANTS_TO_USERS
+6	External function latency	EXTERNAL_FUNCTIONS_HISTORY
+7	Share consumption	DATA_TRANSFER_HISTORY
+8	Snowpipe lag	COPY_HISTORY
+9	Cross-region transfer	DATA_TRANSFER_HISTORY
+10	MV maintenance cost	MATERIALIZED_VIEW_REFRESH_HISTORY
+11	Auto-suspend effectiveness	WAREHOUSE_EVENTS_HISTORY
+12	Duplicate queries	QUERY_HISTORY (hash grouping)
+13	Full table scans	QUERY_HISTORY (partition ratio)
+14	Remote spilling	QUERY_HISTORY
+15	Cache hit rate	QUERY_HISTORY
+16	Schema changes	QUERY_HISTORY (DDL filter)
+17	Long-running queries	QUERY_HISTORY
+18	Concurrency peaks	WAREHOUSE_LOAD_HISTORY
+19	Network violations	LOGIN_HISTORY
+20	Dependency depth	OBJECT_DEPENDENCIES
+Combined with the earlier metrics, you now have ~40 candidates. For a practical dashboard, I'd recommend grouping them into 4-5 pages: Cost, Performance, Reliability, Security, and Governance.
