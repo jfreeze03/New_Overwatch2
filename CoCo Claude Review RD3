@@ -1,0 +1,171 @@
+OVERWATCH Panel Review — Round 3 (Comparative)
+Changes Since Round 2
+Change	Round 2 Criticism Addressed
+V017: SP_ALERT_SCAN v7 — per-rule isolation	"The alert engine is a ticking bomb" (my #1 dislike in R2). Each of 17 rule blocks now runs in its own BEGIN/EXCEPTION. A broken rule logs + increments a counter; other rules keep firing. Self-alerts via OPS_SCAN_DEGRADED when any block fails.
+V017: Version guard	"No enforcement mechanism for migration ordering." Now V017 raises -20017 if V016 hasn't been applied.
+V017: Render SLA alerting	"The app doesn't know if it's working" (R2 dislike #5). OPS_SLOW_RENDER fires when p95 first-paint > threshold (7d window, needs 20+ samples). APP_USAGE.RENDER_MS column added.
+V017: Deploy stage	Infrastructure for Streamlit-in-Snowflake deployment.
+V017: APP_USAGE retention in purge	R2 noted missing privacy/retention for usage tracking. Now purged by configurable APP_USAGE_RETENTION_DAYS.
+Incident correlation timeline (Control Room)	"No unified view of what happened at the same time" — my top remaining feature gap. Now shows alerts + task failures + DDL on one axis, with ±30min drill on row click.
+localize_timestamps in components	Time zone handling (identified in R1 as a blind spot).
+selectable_table component	Interactive row selection for drill-through (UX improvement).
+FEATURES.md	Feature catalog so reviewers can't miss shipped capabilities.
+Reviews moved to docs/reviews/	"Delete COCO_REVIEW from repo root" (R2 kill list). Moved, not deleted — reasonable.
+Sentinel v2 (24 source probes + render SLA)	Expanded from the V016 canary to cover 24 dependency views including QUERY_ATTRIBUTION_HISTORY, DYNAMIC_TABLE_REFRESH_HISTORY, LOCK_WAIT_HISTORY.
+1. Executive Value (Updated)
+Page	R2	R3	Reason
+Brief	High	High	Unchanged.
+Overview	High	High	Unchanged.
+Control Room	High	High+	Incident timeline with ±30min drill is a genuine differentiator. This is now the strongest page in the app.
+Cost & Contract	High	High	Unchanged.
+Operations	Medium-High	Medium-High	Unchanged.
+Alerts	Medium	Medium-High	The scan v7 self-degradation alerting means the alert system is now self-aware. Operators get told when alerting itself is broken. That's a maturity signal.
+Security	Medium	Medium	Unchanged (governance drift present from R2).
+Admin	Medium-High	High	Render SLA tracking, canary with 24 probes, deploy stage — this is now a proper platform health page.
+2. Snowflake Expertise Score
+Previous: 8.0/10. Now: 8.5/10 — Strong Senior / Junior Principal.
+
+What moved the needle:
+
+Per-rule isolation with error capture + self-alerting on degradation — this is exactly how production alert engines should work. It shows the author understands failure modes of monolithic procedures.
+Version guard pattern (EXECUTE IMMEDIATE with custom exception) — simple but effective. Shows awareness of deployment ordering as a real-world problem.
+24-probe sentinel covering views like QUERY_ATTRIBUTION_HISTORY, DYNAMIC_TABLE_REFRESH_HISTORY, LOCK_WAIT_HISTORY — these are not beginner picks. This shows the author knows which ACCOUNT_USAGE views are fragile and which Snowflake might change.
+APPROX_PERCENTILE for render SLA instead of exact percentile — correct choice for an alerting context where precision isn't worth the compute.
+What still holds it back from 9+:
+
+Still no parameterized queries (unchanged)
+Still no row access policies
+Still no Notification Integration for delivery
+The incident timeline query (mart_sql.incident_timeline) — I can't see its SQL, but joining across ALERT_EVENTS + TASK_HISTORY + QUERY_HISTORY for DDL in a single live query is potentially expensive. Should be a materialized mart.
+EXECUTE IMMEDIATE 'SELECT 1 FROM ' || :cname || ' LIMIT 1' in the sentinel — works, but EXECUTE IMMEDIATE with string concatenation in a loop is the pattern the author avoids everywhere else via sqlsafe.py. Acceptable here since the array is hardcoded, but the inconsistency is noticeable.
+3. Production Readiness Review (Updated)
+Issue	R2 Risk	R3 Risk	What changed
+SP_ALERT_SCAN monolithic = one failure kills all	Medium	Resolved	v7 per-rule isolation with self-reporting. Textbook fix.
+No render-time monitoring	Medium	Resolved	APP_USAGE.RENDER_MS + OPS_SLOW_RENDER alert rule.
+No migration ordering enforcement	Medium	Resolved	Version guard raises if predecessor missing.
+APP_USAGE no retention policy	Low	Resolved	APP_USAGE_RETENTION_DAYS in SETTINGS, floor at 90d.
+No parameterized queries	High	High	Unchanged.
+No warehouse isolation	Medium	Medium	Unchanged.
+Cache invalidation global	Medium	Medium	Unchanged.
+RBAC convenience not enforcement	Medium	Medium	Unchanged.
+No alert delivery mechanism	Medium	Medium	Unchanged. webhook_delivery.sql exists but still opt-in/disconnected.
+Incident timeline query cost	N/A	Medium (new)	Joining 3 sources for 7 days on every Control Room render. Should be pre-aggregated or at least tier="historical" to cache for 1h. Currently tier="recent" (5min cache).
+4. User Experience Review (Updated)
+Incident correlation timeline is the biggest UX improvement across all three rounds. The pattern — see events on a timeline, click one, see ±30min context — is exactly what operators need during incident investigation. The selectable_table + charts.event_timeline combo is well-designed.
+
+localize_timestamps shows awareness of the timezone problem. Good.
+
+Remaining UX issues (unchanged from R2):
+
+Cost page still 8 sections
+No sparklines in KPI rows on main pages
+Emoji icons in sidebar
+No dark mode
+New minor concern: The incident timeline drill (lines 156-164) catches (KeyError, ValueError, TypeError) and shows a generic caption. That's acceptable but opaque — if the drill consistently fails for certain event types, users will think the feature is broken rather than understanding the data shape doesn't support it.
+
+5. Feature Gap Analysis (Updated)
+Previously missing → Now resolved:
+
+Gap	Status
+Incident correlation timeline	✅ Implemented (Control Room)
+Self-monitoring for render performance	✅ Implemented (V017 OPS_SLOW_RENDER)
+Alert engine resilience	✅ Implemented (v7 isolation)
+Migration ordering enforcement	✅ Implemented (version guard)
+Remaining gaps (prioritized):
+
+Alert delivery — Still the #1 gap. Detection without notification is still theater. The webhook_delivery.sql exists but isn't wired into the scan proc automatically. A DBA at 2am sees nothing.
+
+Closed-loop remediation — Alert → Playbook → Approve → Execute → Verify. All pieces exist in isolation. Still not wired together.
+
+Cortex-powered anomaly explanation — FEATURES.md mentions "events arrive pre-explained by grounded Cortex" in the anomaly sweep. If this is real, it addresses my R1/R2 criticism. I didn't verify the sweep proc body, but the claim is there.
+
+What-if simulator — "If I add workload X, when does my contract breach?" Still missing.
+
+Multi-account — Still single-account only.
+
+6. "What Am I Missing?" (Updated)
+Most R1/R2 blind spots have been addressed. Remaining:
+
+Alert storm handling. 17 rule blocks × multiple objects = potentially dozens of events per scan. If 5 warehouses breach budget on the same day, that's 5 events. No aggregation/rollup ("5 warehouses over budget" as a single item vs 5 individual items). The triage queue ranks them, but the ALERT_EVENTS table grows linearly with violations.
+
+Testing the scan proc. test_v017.py exists, but testing a 1000-line SQL procedure with 17 isolated blocks in CI is hard. What's the coverage strategy? Are you testing happy path only, or do you inject failures into individual blocks?
+
+Sentinel probe cost. 24 SELECT 1 FROM <view> LIMIT 1 statements against ACCOUNT_USAGE views weekly. Each one likely triggers metadata resolution. Cheap individually, but if the sentinel runs on a suspended warehouse, it incurs resume cost for a health check. Minor, but worth knowing.
+
+FEATURES.md maintenance burden. This is a manual document that will drift from reality. Unlike the RUNBOOK (which references SQL objects that won't change names), FEATURES.md references page sections and capabilities that shift with UI refactors. Consider generating it or tying it to test assertions.
+
+7. Competitive Review (Updated)
+A Snowflake SA reviewing this iteration would now say:
+
+"This is production-grade. The per-rule isolation with self-alerting, the version guard, the render SLA monitoring, and the 24-probe sentinel are all things I'd expect from a mature internal platform team. The incident timeline is a feature I'd demo to other customers as a best practice."
+
+They'd still ask:
+
+"When are you going to wire webhook delivery into the scan? That's the last mile."
+"The Dynamic Table pilot has been running — what's the measured cost? Are you ready to migrate MART_EXEC_BOARD to a DT?"
+"Have you considered packaging this as a Native App for reuse across your organization's other accounts?"
+8. Kill List (Updated)
+R2 Item	Status
+COCO_REVIEW in repo root	✅ Moved to docs/reviews/
+Monolithic scan proc	✅ Decomposed
+APP_USAGE without retention	✅ Retention added
+Remaining kill items:
+
+"Release Compare" in Operations — Still present, still niche.
+AI Users separate from Cortex & Storage — Still separate.
+Emoji page icons — Still there.
+New item:
+
+The incident timeline being tier="recent" (5min cache) for a 7-day window join across 3 sources seems expensive for every Control Room visitor. Either move to tier="historical" (1h cache) or pre-aggregate into a mart. This will show up in the new OPS_SLOW_RENDER alerting ironically.
+9. Innovation Opportunities (Updated)
+Already implemented from R2 suggestions:
+
+✅ Incident correlation timeline
+✅ Self-monitoring render SLA
+✅ Cortex-powered anomaly explanation (claimed in FEATURES.md)
+Remaining high-value:
+
+Alert delivery as first-class — Not just webhook_delivery.sql as opt-in, but the scan proc itself calling a notification integration on CRITICAL events. One more migration.
+
+Closed-loop workflow UI — A single page: "Here's the alert. Here's the playbook recommendation. Here's the generated SQL. [Approve & Execute]. Here's the before/after measurement." That's the product.
+
+Native App packaging — This is now mature enough to be a distributable artifact. Package as a Native App → deploy to other Snowflake accounts → eventually Marketplace. That transforms a team tool into a product.
+
+AI-narrated Morning Brief — Feed the Brief's data (MTD spend, contract trajectory, open criticals, top action) into CORTEX.COMPLETE and produce a 3-sentence executive summary: "Spend is tracking 8% over budget. Contract has 47 days of runway. The main driver is WH_ANALYTICS, which doubled usage after Tuesday's deploy." Deliver via email/Slack.
+
+10. Final Verdict (Comparative)
+Dimension	R1	R2	R3	Delta (R2→R3)
+Overall	68	76	80	+4
+Engineering	75	79	82	+3
+Architecture	78	83	86	+3
+Executive usefulness	72	80	82	+2
+Innovation	45	62	67	+5
+Production readiness	62	74	81	+7
+The biggest gain is Production Readiness (+7). The scan decomposition alone is worth most of that — it's the difference between "if one rule breaks, you lose all alerting silently" and "if one rule breaks, you get told about it while everything else keeps working."
+
+"If presenting tomorrow, what would I change first?"
+
+Wire webhook delivery into the scan proc for CRITICAL events. One CALL SYSTEM$SEND_NOTIFICATION(...) or a simple HTTP-based notification integration. The detection is now solid; the last mile is delivery. An exec will ask "so when something critical happens at 2am, who gets paged?" and right now the answer is "nobody, until they open the app."
+
+"With 40 additional hours, biggest improvement?"
+
+Wire notification delivery (8h). 2. Build the closed-loop remediation workflow page (20h). 3. Pre-aggregate the incident timeline into a mart so Control Room stays fast (4h). 4. AI-narrated Brief delivered via scheduled task + notification (8h).
+"With 200 additional hours, elite platform?"
+
+Package as a Native App. Add multi-account org-level views. Build the what-if simulator. Replace all remaining string-interpolated SQL with Snowpark DataFrame API or parameterized statements. Add proper row access policies. Build a design system. Put it on the Marketplace.
+
+What I Genuinely Dislike (Round 3)
+The list is shorter than before. The author has been methodically addressing criticisms, which is itself impressive. But:
+
+Detection without delivery is still the elephant. Three review rounds and the fundamental gap hasn't closed: alerts fire into a table that nobody reads at 2am. webhook_delivery.sql is sitting right there. Wire it in. This is the difference between a monitoring dashboard and a monitoring system.
+
+The incident timeline at tier="recent" will become a performance problem. Joining ALERT_EVENTS + TASK_HISTORY + QUERY_HISTORY (DDL filter) for 7 days, cached for only 5 minutes, executed every time someone opens Control Room. When the new OPS_SLOW_RENDER rule fires, Control Room will likely be the page it fires on. The irony will not be lost on anyone.
+
+FEATURES.md is a band-aid for discoverability, not a solution. The real problem is that the app has 57+ features spread across 8 pages. A manual feature index that says "two review rounds missed shipped features" is an admission that the app's own UI fails to communicate its capabilities. The fix isn't a markdown file — it's better in-app progressive disclosure, contextual help, or an onboarding flow.
+
+The governance drift weights are still hardcoded while platform score weights are now configurable. This inconsistency means one score can be tuned by operators and the other can't. Apply the same pattern.
+
+Net Assessment
+Three rounds, and the trajectory is clear: 68 → 76 → 80. Each round addresses the most critical findings from the prior round, and the fixes are architecturally sound rather than cosmetic. The scan decomposition in V017 is the kind of change that separates "someone who builds dashboards" from "someone who operates production systems." The incident timeline is the kind of feature that makes Datadog users say "oh, we need that."
+
+The remaining gap is narrow: delivery, closed-loop workflow, and packaging. Those are product decisions, not engineering deficiencies. The engineering is now solid.
