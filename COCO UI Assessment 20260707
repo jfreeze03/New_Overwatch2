@@ -1,0 +1,114 @@
+UI/UX Assessment — OVERWATCH
+Overall UX Rating: 7.0 / 10
+Competent, functional, and honest — but not beautiful, not delightful, and not pushing the boundaries of what Streamlit can do.
+
+What Works Well
+1. Information architecture is strong (8/10)
+
+Brief → Overview → Control Room → Detail pages is a proper progressive disclosure hierarchy
+lazy_sections solves the Streamlit tab performance problem correctly (renders only active section)
+Deep-link support via ?section=<slug> means users can bookmark specific views
+Scope chips persist below the header so context survives scrolling
+2. Honesty as a UX principle (9/10)
+
+"Not configured" instead of invented budget numbers
+Source + freshness captions on every panel
+Truncation banners when results are capped
+"Live fallback (bounded)" labels when reading from ACCOUNT_USAGE directly
+This is rare. Most dashboards hide their uncertainty. This one surfaces it.
+3. Data tables are well-handled (7.5/10)
+
+_auto_formats applies convention-based formatting ($ for USD columns, commas for counts) without per-table config
+Status columns get semantic colors automatically via status_columns_in + status_css
+Every table has a CSV download button — auditors and managers love this
+selectable_table enables row-click drill-through where Streamlit supports it
+4. Chart system is cohesive (7/10)
+
+Custom Altair theme with consistent palette (_ACCENT, _GRID, _LABEL)
+Dollar-formatted axes, proper tooltips
+sparkline_row for inline trends is a good addition
+event_timeline for incident correlation is visually effective
+waterfall_usd for attribution is the right chart type
+hour_heatmap for time-of-day patterns
+5. Error states are designed, not afterthoughts (8/10)
+
+guard() handles: error → labeled error; empty → labeled info; truncated → warning banner
+safe_page boundary means a crash never shows a Python traceback
+Missing migration state surfaces a helpful message, not a blank page
+What Doesn't Work
+1. Visual design is utilitarian, not polished (5/10)
+
+The theme is 48 lines of CSS. That's deliberate minimalism, but the result is:
+
+st.metric cards with a subtle border are fine but generic — indistinguishable from any Streamlit demo
+No visual weight differentiation between critical and informational sections
+No custom typography hierarchy — everything uses Streamlit defaults
+The "OVERWATCH" kicker at 0.72rem with letter-spacing is the only brand moment
+The glowing cyan dot (.ow-brand-dot) is a nice touch but it's the only custom visual element
+Verdict: Looks like a well-organized prototype, not a polished product. An executive seeing this for the first time will think "internal tool," not "platform."
+
+2. Navigation is functional but flat (6/10)
+
+Sidebar radio buttons for pages — works, but no visual indication of "where I am" beyond the selected radio
+No breadcrumbs, no "you are here" context beyond scope chips
+lazy_sections renders as a horizontal radio — this is a Streamlit limitation, but it means 7-8 sections render as a cramped pill bar on narrower screens
+No keyboard navigation / shortcuts for power users
+The jump box (sidebar search) is mentioned in FEATURES.md but I didn't see its implementation — if it exists, good; if not, navigation across 40+ sections requires knowing which page holds what
+3. Color system is good but inconsistent in application (6.5/10)
+
+status_colors.py is excellent — proper dark/light theme pairs, semantic meaning, contrast-aware. But:
+
+Page icons still use emoji (☀️📊🎛️💰🔧🚨🔐⚙️) which render inconsistently across platforms
+The chart accent color (#38bdf8 sky blue) doesn't clearly connect to severity — a spend chart and an info chip use the same blue
+No color for "things are getting better" vs "things are getting worse" in KPI deltas beyond Streamlit's built-in green/red delta_color
+4. Mobile experience is accidental, not designed (4/10)
+
+The Brief page is described as "phone-friendly" but:
+
+Streamlit's st.columns collapses columns on narrow viewports, which means KPI rows stack vertically — acceptable but not optimized
+lazy_sections horizontal radio overflows on mobile
+No responsive chart sizing — fixed height=260 means charts are either too tall on mobile or too short on desktop
+No touch-friendly interaction patterns
+Download buttons below every table add vertical noise on small screens
+5. Information density swings between sparse and overwhelming (5.5/10)
+
+Brief page: perfect density — 5 figures, fires, asks, done
+Overview: good — KPI row, chart, score, actions
+Control Room: good — pulse, queue, movers, freshness
+Cost page (8 sections): too much. Each section is individually reasonable, but toggling through 8 radio pills to find what you need is a content management problem, not a UX solution
+Operations (7 sections): same issue
+No visual grouping/hierarchy within sections — every section looks the same (subheader → data → caption)
+6. Interactivity is limited by Streamlit (6/10)
+
+This isn't entirely the author's fault — Streamlit is a constrained framework. But:
+
+No hover states or contextual menus
+Row selection → drill is the only interactive pattern (and only works on newer Streamlit versions)
+Filters are global (sidebar) but some sections ignore some filters — there's no visual feedback about which filters apply to the current section
+No inline editing (alert thresholds require navigating to Admin)
+No undo for operator actions
+Specific Recommendations
+Priority	Fix	Effort
+High	Replace emoji page icons with consistent SVG/Unicode symbols or remove entirely	Low
+High	Add a visual "severity stripe" to the top of each section (red/amber/green border-left based on section health)	Low
+High	Promote the 3-4 most important KPIs from Brief to a persistent "status bar" that's visible on every page	Medium
+Medium	Add sparklines to KPI rows on Overview and Control Room (you have sparkline_row — use it more)	Low
+Medium	On Cost page, collapse sections into 4: "Spend & Attribution", "Contract & Forecast", "Chargeback & Cortex", "Optimization & Savings"	Medium
+Medium	Add a "last refreshed" indicator in the sidebar (global, always visible) rather than per-panel captions	Low
+Low	Add a "What's new" or "Most relevant to you" panel on Overview that uses APP_USAGE to highlight sections the user hasn't visited	High
+Low	Design system: create 3-4 card variants (metric card, alert card, action card) with distinct visual weight	Medium
+Compared to Competitors
+Tool	UX Quality	OVERWATCH vs
+Snowsight native	7/10	Comparable — both are functional dark-theme data tools
+Datadog	9/10	Below — Datadog has dense-but-scannable layouts, custom widgets, real-time updates
+Grafana	7.5/10	Comparable — Grafana is also utilitarian, but has customizable panel layouts
+Monte Carlo	8/10	Below — Monte Carlo's incident views have better visual hierarchy
+Power BI	8/10	Below — Power BI's visual polish and interaction model are more refined
+Bottom Line
+The UX is honest, well-structured, and functional — which puts it ahead of 90% of internal Streamlit dashboards. The information architecture (Brief → Overview → Detail) is genuinely good. The error/empty/truncation handling is best-in-class for Streamlit apps.
+
+But it's constrained by two things:
+
+Streamlit's framework limits — no custom widgets, no real-time updates, no rich interaction beyond dataframe selection
+Minimal investment in visual design — 48 lines of CSS for an enterprise platform is too little. The status color system shows the author can think about visual design — they just haven't applied that thinking to layout, spacing, card design, or visual hierarchy at the page level.
+If this were a portfolio piece going to leadership: the architecture impresses, the UX doesn't. The fix isn't a redesign — it's 20-30 hours of visual polish: card variants, severity indicators, consistent iconography, and information density optimization on the two most-visited pages (Brief and Control Room).
