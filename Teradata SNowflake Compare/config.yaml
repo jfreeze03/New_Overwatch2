@@ -1,0 +1,44 @@
+# =====================================================================
+# td_sf_compare configuration
+# Passwords are NEVER stored here — set env vars TD_PASSWORD / SF_PASSWORD
+# =====================================================================
+
+teradata:
+  jdbc_jar: C:/jdbc/terajdbc4.jar          # terajdbc4.jar (17.20+ is a single jar)
+  driver_class: com.teradata.jdbc.TeraDriver
+  url: jdbc:teradata://tdprod.alfains.com/LOGMECH=LDAP,CHARSET=UTF8,TMODE=ANSI
+  user: your_td_user
+  password_env: TD_PASSWORD
+
+snowflake:
+  jdbc_jar: C:/jdbc/snowflake-jdbc-3.16.1.jar
+  driver_class: net.snowflake.client.jdbc.SnowflakeDriver
+  # Keep warehouse small — metadata + aggregate queries only
+  url: jdbc:snowflake://alfa.snowflakecomputing.com/?warehouse=ANALYST_WH&role=MIGRATION_ENGINEER_ROLE&QUERY_TAG=TD_SF_COMPARE
+  user: your_sf_user
+  password_env: SF_PASSWORD
+
+# One entry per Teradata database -> Snowflake db.schema pair
+mappings:
+  - teradata_db: PLCY_DB
+    snowflake_db: RAW_DB
+    snowflake_schema: PLCY
+  - teradata_db: CLMS_DB
+    snowflake_db: RAW_DB
+    snowflake_schema: CLMS
+
+# Optional: limit comparison to specific tables (empty = all tables in mapping)
+include_tables: []          # e.g. [PLCY_RAW_VTBL, WR_MULTILINE_METRICS_DTL]
+exclude_tables: []
+
+tiers:
+  run_inventory: true        # Tier 1: object counts + missing/extra objects
+  run_schema: true           # Tier 2: column-level diff with canonical types
+  run_rowcounts: true        # Tier 3: row count reconciliation
+  run_fingerprint: false     # Tier 4: aggregate data fingerprints (opt-in, costs compute)
+
+  # Cost guardrails for Tier 4
+  fingerprint_max_rows: 50000000   # skip fingerprint for tables larger than this
+  fingerprint_max_cols: 40         # fingerprint only the first N comparable columns
+
+output_dir: ./reports
