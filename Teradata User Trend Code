@@ -1,0 +1,253 @@
+/* =====================================================================
+   TD_USER_TREND_RANKING_V2.SQL
+   ALFA Insurance -- Teradata -> Snowflake migration
+   ---------------------------------------------------------------------
+   Combines:
+     A) Per-user monthly trend + worst-to-best composite ranking
+     B) Projected Snowflake spend at $3.68/credit (ALFA contract rate)
+   into ONE scan of DBC.QryLogV.
+
+   v2 improvements over v1:
+     - Single volatile base table feeds both ranking AND cost model
+       (v1 ranking + spend projection each scanned QryLogV separately)
+     - CPU now = AMPCPUTime + ParserCPUTime (parse-heavy users were
+       under-counted in v1)
+     - Physical I/O in GB via ReqPhysIO (logical TotalIOCount retained
+       for the skew/ranking side only)
+     - 5407-safe elapsed math: INTERVAL DAY(4) TO SECOND + COALESCE on
+       FirstRespTime (NULL for errored queries) -- your validated fix
+     - MO_ID = Yr*100 + Mth (validated pattern, no string concat)
+     - Expanded system-account exclusion list
+     - Volatility watch flag (peak month >= 3x avg month) in summary
+     - NULLIF guards on every ratio
+
+   HONESTY NOTE (unchanged): the USD column is a directional proxy, not
+   a budget forecast. Teradata is fixed-capacity; Snowflake bills per-
+   second warehouse compute. The RANKING and RELATIVE spend are far more
+   trustworthy than absolute dollars until the calibration constants are
+   back-solved against real workloads on a real Snowflake warehouse.
+   ===================================================================== */
+
+/* ------------------------------------------------------------------
+   CALIBRATION CONSTANTS (tune after benchmarking):
+     CR_PER_CPU_SEC = 0.00005   credits per CPU second
+     CR_PER_GB      = 0.00265   credits per physical GB read
+                                ( $10/TB / 1024 / $3.68 calibration )
+     CR_PER_M_ROWS  = 0.0025    credits per 1M result rows
+     CR_PER_QUERY   = 0.0001    credits per query (overhead)
+     CR_FLOOR_QRY   = 0.0003    per-query minimum (60s min bill proxy)
+     USD_PER_CREDIT = 3.68      ALFA contract rate
+   RANKING WEIGHTS (must sum to 1.00):
+     CPU .30 | IO .20 | Spool .15 | SkewWaste .15
+     Delay .10 | Failure rate .05 | PJI rate .05
+   ------------------------------------------------------------------ */
+
+/* ------------------------------------------------------------------
+   STEP 1 : Single-pass monthly per-user base aggregates
+   ------------------------------------------------------------------ */
+CREATE VOLATILE TABLE VT_USER_MONTH AS (
+    SELECT
+        q.UserName
+      , (EXTRACT(YEAR FROM q.StartTime) * 100)
+        + EXTRACT(MONTH FROM q.StartTime)                      AS MO_ID
+      , EXTRACT(YEAR  FROM q.StartTime)                        AS Yr
+      , EXTRACT(MONTH FROM q.StartTime)                        AS Mth
+      , CASE WHEN q.UserName IN ('INFORMATICA','CONTROLM','ETL_SVC')
+             THEN 'Y' ELSE 'N' END                             AS SvcAcctFlag
+      , COUNT(*)                                               AS QryCnt
+      , SUM(CASE WHEN q.ErrorCode <> 0 OR q.AbortFlag = 'T'
+                 THEN 1 ELSE 0 END)                            AS FailedCnt
+
+      /* ----- compute-side metrics (ranking + cost model) ----- */
+      , SUM(COALESCE(q.AMPCPUTime,0)
+          + COALESCE(q.ParserCPUTime,0))                       AS TotCPUSec
+      , SUM(COALESCE(q.TotalIOCount,0))                        AS TotLogicalIO
+      , SUM(COALESCE(q.ReqPhysIO,0)) * 127.0
+          / (1024.0 * 1024.0)                                  AS PhysIO_GB
+        /* 127KB avg block size -- adjust to your system         */
+      , SUM(COALESCE(q.NumResultRows,0))                       AS ResultRows
+      , MAX(COALESCE(q.SpoolUsage,0)) / (1024*1024*1024.0)     AS MaxSpoolGB
+
+      /* ----- behavior-side metrics (ranking only) ----- */
+      , SUM(COALESCE(q.DelayTime,0))                           AS TotDelaySec
+      , AVG(COALESCE(q.DelayTime,0))                           AS AvgDelaySec
+      , SUM(COALESCE(q.MaxAMPCPUTime,0)
+          * COALESCE(q.NumOfActiveAMPs,0))                     AS ImpactCPU
+      , SUM(COALESCE(q.MaxAMPCPUTime,0)
+          * COALESCE(q.NumOfActiveAMPs,0))
+        - SUM(COALESCE(q.AMPCPUTime,0))                        AS SkewWasteCPU
+      , SUM(CASE WHEN q.TotalIOCount > 0
+                  AND q.AMPCPUTime  > 100
+                  AND (q.AMPCPUTime * 1000.0) / q.TotalIOCount > 3
+                 THEN 1 ELSE 0 END)                            AS SuspectPJICnt
+
+      /* ----- 5407-safe elapsed seconds ----- */
+      , SUM(
+          (EXTRACT(DAY FROM (COALESCE(q.FirstRespTime, q.StartTime)
+                             - q.StartTime) DAY(4) TO SECOND) * 86400)
+        + (EXTRACT(HOUR   FROM (COALESCE(q.FirstRespTime, q.StartTime)
+                             - q.StartTime) DAY(4) TO SECOND) * 3600)
+        + (EXTRACT(MINUTE FROM (COALESCE(q.FirstRespTime, q.StartTime)
+                             - q.StartTime) DAY(4) TO SECOND) * 60)
+        +  EXTRACT(SECOND FROM (COALESCE(q.FirstRespTime, q.StartTime)
+                             - q.StartTime) DAY(4) TO SECOND)
+        )                                                      AS TotElapsedSec
+    FROM DBC.QryLogV q
+    WHERE q.StartTime >= CAST(ADD_MONTHS(CURRENT_DATE, -12) AS TIMESTAMP)
+      /* swap source to PDCRINFO.DBQLogTbl_Hst for longer history */
+      AND q.UserName NOT IN (
+            'DBC','TDWM','TDBCMgmt','MONITOR','SQLJ','SYSLIB','SysAdmin',
+            'DBCMaint','SYSDBA','PUBLIC','Crashdumps','SystemFe','EXTUSER',
+            'LockLogShredder','ViewPoint','TDMaint','TDPUSER'
+        )
+    GROUP BY 1,2,3,4,5
+) WITH DATA
+PRIMARY INDEX (UserName, MO_ID)
+ON COMMIT PRESERVE ROWS;
+
+/* ------------------------------------------------------------------
+   STEP 2 : Credit model + percentile scores in one pass
+   ------------------------------------------------------------------ */
+CREATE VOLATILE TABLE VT_USER_SCORE AS (
+    SELECT
+        m.*
+      /* ----- projected Snowflake credits (floor-enforced) ----- */
+      , CASE WHEN (  m.TotCPUSec              * 0.00005
+                   + m.PhysIO_GB              * 0.00265
+                   + (m.ResultRows/1000000.0) * 0.0025
+                   + m.QryCnt                 * 0.0001 )
+                  < m.QryCnt * 0.0003
+             THEN m.QryCnt * 0.0003
+             ELSE (  m.TotCPUSec              * 0.00005
+                   + m.PhysIO_GB              * 0.00265
+                   + (m.ResultRows/1000000.0) * 0.0025
+                   + m.QryCnt                 * 0.0001 )
+        END                                                    AS ProjCredits
+
+      /* ----- within-month percentile ranks ----- */
+      , PERCENT_RANK() OVER (PARTITION BY MO_ID ORDER BY TotCPUSec)    AS pr_cpu
+      , PERCENT_RANK() OVER (PARTITION BY MO_ID ORDER BY TotLogicalIO) AS pr_io
+      , PERCENT_RANK() OVER (PARTITION BY MO_ID ORDER BY MaxSpoolGB)   AS pr_spool
+      , PERCENT_RANK() OVER (PARTITION BY MO_ID ORDER BY SkewWasteCPU) AS pr_skew
+      , PERCENT_RANK() OVER (PARTITION BY MO_ID ORDER BY TotDelaySec)  AS pr_delay
+      , PERCENT_RANK() OVER (PARTITION BY MO_ID
+            ORDER BY CAST(FailedCnt AS FLOAT) / NULLIF(QryCnt,0))      AS pr_fail
+      , PERCENT_RANK() OVER (PARTITION BY MO_ID
+            ORDER BY CAST(SuspectPJICnt AS FLOAT) / NULLIF(QryCnt,0))  AS pr_pji
+    FROM VT_USER_MONTH m
+) WITH DATA
+PRIMARY INDEX (UserName, MO_ID)
+ON COMMIT PRESERVE ROWS;
+
+/* ------------------------------------------------------------------
+   STEP 3 : Composite score + rank + projected spend, persisted once
+            so Steps 4-6 don't recompute the weighted expression
+   ------------------------------------------------------------------ */
+CREATE VOLATILE TABLE VT_USER_RANKED AS (
+    SELECT
+        s.UserName, s.MO_ID, s.Yr, s.Mth, s.SvcAcctFlag
+      , s.QryCnt, s.FailedCnt, s.SuspectPJICnt
+      , s.TotCPUSec, s.TotLogicalIO, s.PhysIO_GB, s.ResultRows
+      , s.MaxSpoolGB, s.TotDelaySec, s.AvgDelaySec
+      , s.SkewWasteCPU, s.TotElapsedSec
+      , s.ProjCredits
+      , s.ProjCredits * 3.68                                   AS ProjUSD
+      , CAST( s.pr_cpu   * 0.30
+            + s.pr_io    * 0.20
+            + s.pr_spool * 0.15
+            + s.pr_skew  * 0.15
+            + s.pr_delay * 0.10
+            + s.pr_fail  * 0.05
+            + s.pr_pji   * 0.05 AS DECIMAL(6,4))               AS BadnessScore
+    FROM VT_USER_SCORE s
+) WITH DATA
+PRIMARY INDEX (UserName, MO_ID)
+ON COMMIT PRESERVE ROWS;
+
+/* ------------------------------------------------------------------
+   RESULT A : Monthly worst-to-best ranking WITH projected spend
+   ------------------------------------------------------------------ */
+SELECT
+    r.MO_ID
+  , r.UserName
+  , r.SvcAcctFlag
+  , r.BadnessScore
+  , RANK() OVER (PARTITION BY r.MO_ID
+                 ORDER BY r.BadnessScore DESC)                 AS WorstRank
+  , CAST(r.ProjCredits AS DECIMAL(14,2))                       AS ProjCredits
+  , CAST(r.ProjUSD     AS DECIMAL(14,2))                       AS ProjUSD
+  , RANK() OVER (PARTITION BY r.MO_ID
+                 ORDER BY r.ProjUSD DESC)                      AS SpendRank
+  , r.QryCnt
+  , CAST(r.TotCPUSec    AS DECIMAL(18,1))                      AS TotCPUSec
+  , CAST(r.PhysIO_GB    AS DECIMAL(14,2))                      AS PhysIO_GB
+  , CAST(r.MaxSpoolGB   AS DECIMAL(12,2))                      AS MaxSpoolGB
+  , CAST(r.SkewWasteCPU AS DECIMAL(18,1))                      AS SkewWasteCPU
+  , CAST(r.AvgDelaySec  AS DECIMAL(12,1))                      AS AvgDelaySec
+  , r.FailedCnt
+  , r.SuspectPJICnt
+FROM VT_USER_RANKED r
+ORDER BY r.MO_ID, WorstRank;
+
+/* ------------------------------------------------------------------
+   RESULT B : Trend -- is each user getting better or worse?
+              Negative RankDelta = moving toward rank 1 = WORSE
+   ------------------------------------------------------------------ */
+SELECT
+    t.UserName
+  , t.MO_ID
+  , t.BadnessScore
+  , t.WorstRank
+  , LAG(t.WorstRank) OVER (PARTITION BY t.UserName
+                           ORDER BY t.MO_ID)                   AS PrevRank
+  , COALESCE(LAG(t.WorstRank) OVER (PARTITION BY t.UserName
+                           ORDER BY t.MO_ID), t.WorstRank)
+        - t.WorstRank                                          AS RankDelta
+  , CAST(t.ProjUSD AS DECIMAL(14,2))                           AS ProjUSD
+  , CAST(t.ProjUSD
+        - LAG(t.ProjUSD) OVER (PARTITION BY t.UserName
+                               ORDER BY t.MO_ID)
+        AS DECIMAL(14,2))                                      AS USDDelta
+FROM (
+    SELECT r.UserName, r.MO_ID, r.BadnessScore, r.ProjUSD
+         , RANK() OVER (PARTITION BY r.MO_ID
+                        ORDER BY r.BadnessScore DESC)          AS WorstRank
+    FROM VT_USER_RANKED r
+) t
+ORDER BY t.UserName, t.MO_ID;
+
+/* ------------------------------------------------------------------
+   RESULT C : Executive summary -- one row per user, the governance
+              target list: overall rank, annualized run-rate, and
+              WatchFlag combining badness + spend + volatility
+   ------------------------------------------------------------------ */
+SELECT
+    r.UserName
+  , r.SvcAcctFlag
+  , COUNT(*)                                                   AS MonthsActive
+  , CAST(AVG(r.BadnessScore) AS DECIMAL(6,4))                  AS AvgBadness
+  , RANK() OVER (ORDER BY AVG(r.BadnessScore) DESC)            AS OverallWorstRank
+  , CAST(SUM(r.ProjUSD) AS DECIMAL(14,2))                      AS ProjUSD_Window
+  , CAST(SUM(r.ProjUSD) / NULLIF(COUNT(*),0) * 12.0
+         AS DECIMAL(14,2))                                     AS AnnualRunRateUSD
+  , CAST(MAX(r.ProjUSD) / NULLIF(AVG(r.ProjUSD),0)
+         AS DECIMAL(8,2))                                      AS PeakToAvgRatio
+  , SUM(r.FailedCnt)                                           AS Failed_All
+  , SUM(r.SuspectPJICnt)                                       AS PJI_All
+  , CAST(SUM(r.SkewWasteCPU) AS DECIMAL(18,1))                 AS SkewWaste_All
+  , CASE
+        WHEN MAX(r.ProjUSD) / NULLIF(AVG(r.ProjUSD),0) >= 3.0
+             THEN 'WATCH-VOLATILE'
+             /* spiky users: silent on TD hardware, real $ in SF */
+        WHEN AVG(r.BadnessScore) >= 0.75
+             THEN 'WATCH-CHRONIC'
+        ELSE ''
+    END                                                        AS WatchFlag
+FROM VT_USER_RANKED r
+GROUP BY r.UserName, r.SvcAcctFlag
+ORDER BY OverallWorstRank;
+
+/* Cleanup (optional):
+   DROP TABLE VT_USER_MONTH;
+   DROP TABLE VT_USER_SCORE;
+   DROP TABLE VT_USER_RANKED;                                        */
