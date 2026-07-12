@@ -1,0 +1,28 @@
+RULE_ID	FAMILY	NAME	ENABLED	SEVERITY	THRESHOLD_NUM	WINDOW_HOURS	OWNER	CHANNEL	UPDATED_AT
+COST_ANOMALY_SWEEP	COST	Daily credits anomalous vs trailing 28d (threshold = robust z)	TRUE	MEDIUM	3.5000	24	DBA	IN_APP	2026-07-08 09:04:52.388
+COST_BUDGET_PACE	COST	MTD spend ahead of budget pace (ratio threshold)	TRUE	HIGH	1.1000	24	DBA	IN_APP	2026-07-08 08:45:20.852
+COST_CLOUD_SVC_RATIO	COST	Warehouse cloud-services ratio above threshold % (24h)	TRUE	HIGH	20.0000	24	DBA	IN_APP	2026-07-08 08:59:24.704
+COST_CONTRACT_BREACH	COST	Contract projected to exhaust within threshold days	TRUE	HIGH	30.0000	24	DBA	IN_APP	2026-07-08 09:08:52.336
+COST_DAILY_CREDITS	COST	Account daily credits above threshold	TRUE	HIGH	100.0000	24	DBA	IN_APP	2026-07-08 08:43:01.672
+COST_DEPT_BUDGET_PACE	COST	Department MTD spend over budget pace by threshold %	TRUE	MEDIUM	10.0000	24	DBA	IN_APP	2026-07-08 09:10:49.596
+COST_FORECAST_BREACH	COST	Projected month-end spend exceeds monthly budget	TRUE	CRITICAL	1.0000	24	DBA	IN_APP	2026-07-08 08:45:20.852
+COST_ORG_ACCOUNT_CREEP	COST	Org account currency spend up threshold % week-over-week	TRUE	MEDIUM	50.0000	168	DBA	IN_APP	2026-07-08 09:10:49.596
+COST_SERVERLESS_CREEP	COST	Serverless service credits up threshold % week-over-week	TRUE	MEDIUM	100.0000	168	DBA	IN_APP	2026-07-08 08:59:24.704
+COST_STORAGE_SURGE	COST	Database grew more than threshold GB in a day	TRUE	MEDIUM	100.0000	24	DBA	IN_APP	2026-07-08 08:59:24.704
+COST_WH_DAILY_CREDITS	COST	Single warehouse daily credits above threshold	TRUE	MEDIUM	25.0000	24	DBA	IN_APP	2026-07-08 08:43:01.672
+OPS_ALERT_DRILL	PLATFORM	Monthly fire drill: end-to-end delivery + ack proof	FALSE	CRITICAL	0.0000	744	DBA	IN_APP	2026-07-08 09:22:32.360
+OPS_CANARY_FAIL	PLATFORM	Weekly source-canary found failing dependency views	TRUE	HIGH	0.0000	168	DBA	IN_APP	2026-07-08 09:10:49.596
+OPS_SCAN_DEGRADED	PLATFORM	One or more alert rule blocks failed in the last scan	TRUE	HIGH	0.0000	24	DBA	IN_APP	2026-07-08 09:12:23.847
+OPS_SLOW_RENDER	PLATFORM	Page p95 first paint above threshold seconds (7d)	TRUE	MEDIUM	5.0000	168	DBA	IN_APP	2026-07-08 09:12:23.847
+PERF_CHANGE_REGRESSION	PERFORMANCE	Procedure/task runs worse after a change (threshold = % increase)	TRUE	HIGH	50.0000	24	DBA	IN_APP	2026-07-08 08:58:25.290
+PERF_FINGERPRINT_DRIFT	PERFORMANCE	Query-family p95 up threshold % (7d vs prior 28d, weekly)	TRUE	MEDIUM	100.0000	168	DBA	IN_APP	2026-07-08 09:08:52.336
+PERF_QUERY_FAIL_PCT	PERFORMANCE	Query failure rate above threshold (pct)	TRUE	HIGH	5.0000	24	DBA	IN_APP	2026-07-08 08:43:01.672
+PERF_QUEUED_MINUTES	PERFORMANCE	Warehouse queueing above threshold (minutes)	TRUE	MEDIUM	30.0000	24	DBA	IN_APP	2026-07-08 08:43:01.672
+PERF_SPILL_GB	PERFORMANCE	Remote spill above threshold (GB)	TRUE	MEDIUM	10.0000	24	DBA	IN_APP	2026-07-08 08:43:01.672
+PIPE_COPY_FAILURES	PIPELINE	Failed COPY / Snowpipe file loads in 24h (threshold = allowed failures)	TRUE	HIGH	0.0000	24	DBA	IN_APP	2026-07-08 08:59:24.704
+PIPE_DT_FAILURES	PIPELINE	Dynamic table refresh failures in 24h (threshold = allowed failures)	TRUE	HIGH	0.0000	24	DBA	IN_APP	2026-07-08 09:04:52.388
+PIPE_TASK_FAILURES	PIPELINE	Task failures above threshold (count)	TRUE	HIGH	3.0000	24	DBA	IN_APP	2026-07-08 08:43:01.672
+PIPE_VOLUME_DROP	PIPELINE	Table rows-added down threshold % vs prior-7d average	TRUE	HIGH	50.0000	24	DBA	IN_APP	2026-07-08 09:10:49.596
+SEC_CRED_EXPIRY	SECURITY	Credential expires within threshold days	TRUE	HIGH	10.0000	24	DBA	IN_APP	2026-07-08 08:57:23.301
+SEC_FAILED_LOGINS	SECURITY	Failed logins for one user above threshold	TRUE	HIGH	10.0000	24	DBA	IN_APP	2026-07-08 08:43:01.672
+WH_CHANGE_REGRESSION	WAREHOUSE	Warehouse runs worse after a setting change (threshold = % credits/day increase)	TRUE	HIGH	15.0000	24	DBA	IN_APP	2026-07-08 19:26:46.515
