@@ -1,0 +1,180 @@
+COCO Recomendations
+
+I'll explore the OVERWATCH_NEW-main project structure to understand the cost categories and identify any gaps.Let me read the key cost-related files to understand the full cost accounting model.Now let me check the security/data transfer and egress monitoring.I now have a comprehensive picture of the cost accounting in OVERWATCH_NEW. Here's my analysis:
+
+---
+
+## Cost Categories Accounted For
+
+OVERWATCH covers these Snowflake cost surfaces:
+
+| Category | Source | Method |
+|---|---|---|
+| **Warehouse compute** | `WAREHOUSE_METERING_HISTORY` | Exact credits per warehouse; company-scoped |
+| **Cloud services + 10% adjustment** | `METERING_DAILY_HISTORY` | Billed = used + adjustment; single `_BILLED` formula |
+| **Serverless services** (Snowpipe, tasks, clustering, MV refresh, search opt, QAS, COPY_FILES, SPCS, Openflow) | `METERING_DAILY_HISTORY` | All SERVICE_TYPEs land via unfiltered loader |
+| **AI / Cortex credits** | `CORTEX_CODE_*_USAGE_HISTORY`, `CORTEX_AI_FUNCTIONS_USAGE_HISTORY`, `CORTEX_FUNCTIONS_USAGE_HISTORY`, AI metering | Per-user token attribution + service-level billed |
+| **Storage** (table, stage, failsafe, hybrid, archive cool/cold) | `STORAGE_USAGE`, `DATABASE_STORAGE_USAGE_HISTORY` | Calendar-month avg-of-daily-bytes billing basis; 6 tiers with distinct rates |
+| **Data transfer / egress** | `DATA_TRANSFER_HISTORY` | Daily by cloud/region/type; UNLOAD watch |
+| **Replication** | `METERING_DAILY_HISTORY` (SERVICE_TYPE=REPLICATION) | Lands as its own category |
+| **Object-level costs** | `QUERY_ATTRIBUTION_HISTORY` + maintenance histories | FACT_OBJECT_COST_DAILY with COST_ARM splits (query compute read/write, clustering, MV, search opt, tasks, Snowpipe) |
+| **Contract / commitment** | `ORGANIZATION_USAGE.REMAINING_BALANCE_DAILY`, `CONTRACT_ITEMS`, `USAGE_IN_CURRENCY_DAILY` | Balance burn, runway, renewal scenarios |
+| **Org rate-card (billing truth)** | `USAGE_IN_CURRENCY_DAILY` | Structured by RATING_TYPE: COMPUTE, AI_COMPUTE/AI_INFERENCE, STORAGE/BLOCK_STORAGE, DATA_TRANSFER, ADJUSTMENT |
+| **Chargeback** | `DEPARTMENT_MAP` + warehouse credits | Exact warehouse-grain + elapsed-time role-share allocation |
+
+---
+
+## Confirmed Weaknesses (from the code + the team's own audit)
+
+### High Severity
+
+1. **C1: AI credits priced at the compute rate in all-service rollups.** MTD, pace, forecasts, contract pacing, renewal planner, compare, Brief, and budget alerts all dollarize mixed credits at $3.68 instead of splitting AI ($2.20) from compute. Overstates headline dollars. The `blended_billed_usd()` fix exists in `formulas.py` but is not yet wired into all consumers.
+
+### Medium Severity
+
+2. **C2: QAS credits dropped from proc/CALL/task-graph attribution** — contradicts the `COMPUTE + QAS` registry contract.
+3. **C3: Fail-safe-only databases dropped** from per-DB storage (HAVING guard excludes them).
+4. **C4: Storage MTD silently understates during loader stalls** — no coverage guard; partial fact trusted as-is.
+5. **C5: AI fact boundary-day clobber** — daily loader uses CURRENT_TIMESTAMP window, overwriting complete-day rows with partial recounts.
+6. **C6: Zero dedicated AI alert coverage** — AI spend can double with no alert firing.
+7. **C7: Contract consumed has no coverage guard** on live fallback — silent under-count for older contracts.
+8. **C8: Contract-burn surfaces are credits-only** — storage/transfer draw on the same dollar commitment is undisclosed.
+9. **C9: Chargeback export omits disclosure** that storage/serverless/AI/transfer are structurally excluded.
+
+### Structural Gaps (not tracked in the existing review)
+
+10. **No Snowpark Container Services (SPCS) compute-pool cost attribution.** SPCS credits land in `METERING_DAILY_HISTORY` under their service type but there is no per-compute-pool or per-service cost drill-down.
+11. **No Notebook credit attribution.** Notebook compute is warehouse-based but not surfaced with a dedicated lens.
+12. **No Marketplace listing/app spend tracking.** Native App consumption from listings is not broken out.
+13. **No cross-cloud replication cost drill-down.** Replication lands in totals but has no per-database or per-share breakout.
+
+---
+
+## Recommendations
+
+**Immediate (highest leverage):**
+- Wire `blended_billed_usd()` into every all-service rollup (overview, brief, contract, compare, alerts). This is the single fix that corrects all headline dollar figures.
+- Add `+ COALESCE(CREDITS_USED_QUERY_ACCELERATION, 0)` to the proc/CALL/task attribution SQL.
+- Fix the HAVING guards in storage builders to include fail-safe-only databases.
+
+**Short-term:**
+- Day-align the AI loader arms (use CURRENT_DATE, not CURRENT_TIMESTAMP) to stop boundary-day clobbering.
+- Add a COST_AI_CREEP alert rule to `SP_ALERT_SCAN`.
+- Add coverage guards on the contract consumed live fallback and the Brief path.
+- Add a "scope: warehouse compute only" disclosure to the chargeback export manifest.
+
+**Medium-term (new coverage):**
+- Add per-compute-pool SPCS cost attribution using `SNOWPARK_CONTAINER_SERVICES_HISTORY`.
+- Surface per-database replication cost drill-down from `REPLICATION_GROUP_USAGE_HISTORY`.
+- Correct the `HYBRID_TABLE_REQUESTS` categorization from "Storage" to "Serverless."
+- Load per-DB hybrid/archive bytes into the storage fact (the data exists in `DATABASE_STORAGE_USAGE_HISTORY`).
+
+**Disclosure hygiene:**
+- Add scope caveats on all contract/pacing surfaces (credits-only vs full dollar commitment).
+- Ensure every panel discloses when a filter is silently ignored (schema, warehouse_contains, etc.).
+- Fix the ~10 window-honesty items where a panel's effective window differs from the page header's claimed window.
+
+The foundation is solid — no cost surface is dropped or double-counted at the account total. The main gap is the AI rate split in rollups (high), followed by a band of disclosure/guard issues that don't lose data but can mislead.
+
+
+
+
+How OVERWATCH distinguishes child costs within a stored procedure
+The key mechanism is QUERY_ATTRIBUTION_HISTORY.ROOT_QUERY_ID. When you CALL MY_PROC() and that proc internally runs 5 SQL statements, Snowflake stamps all 5 child statements with ROOT_QUERY_ID = the CALL's QUERY_ID. OVERWATCH exploits this at three levels:
+
+1. Aggregate leaderboard (procedure_costs_usd)
+Groups all CALL statements, rolls up every child's attributed credits to the parent CALL via ROOT_QUERY_ID, and produces a $/call leaderboard ranked by total cost. This answers: "Which stored procedures are most expensive?"
+
+2. Per-CALL lookup (call_cost_lookup)
+Given a specific QUERY_ID or even just a SESSION_ID (for the "three procs in one session, no graph id" case), it finds every CALL in that session and sums each one's children independently. This answers: "I called proc A, then proc B, then proc C in one session — what did each cost?"
+
+3. Child breakdown drill-down (call_children_costs)
+For ONE specific CALL, it lists every child statement with its own attributed credits, query type, and a text preview. This answers: "Inside this one CALL, which SQL statements burned the money?"
+
+The relevant code is at app/data/insights_sql.py:891-1002.
+
+What this means for your scenario
+If you run a session that calls multiple stored procedures:
+
+sql
+CALL PROC_A();   -- QUERY_ID = 'aaa'
+CALL PROC_B();   -- QUERY_ID = 'bbb'  
+CALL PROC_C();   -- QUERY_ID = 'ccc'
+Each child statement inside PROC_A gets ROOT_QUERY_ID = 'aaa', PROC_B's children get ROOT_QUERY_ID = 'bbb', etc. OVERWATCH's call_cost_lookup with the SESSION_ID will show three distinct rows with independent credit totals. Then call_children_costs('aaa') drills into PROC_A's internals.
+
+Limitations / caveats
+~6-8 hour attribution lag — QUERY_ATTRIBUTION_HISTORY is not real-time.
+Idle time excluded — attribution credits answer "what did running THIS cost," not "what share of the warehouse bill does this own." The idle-inclusive allocated view is a separate surface.
+Nested CALLs — If PROC_A calls PROC_B internally, all children still roll up to the outermost CALL's ROOT_QUERY_ID. You can distinguish them by QUERY_TYPE in the children breakdown, but there's no native multi-level tree in the current OVERWATCH UI.
+QAS credits were missing (finding C2 from the audit) — the procedure_costs_usd builder originally summed only CREDITS_ATTRIBUTED_COMPUTE, dropping QAS. The call_children_costs builder was already fixed to include QAS, but the leaderboard and trend are not yet patched.
+So yes, OVERWATCH already differentiates per-proc costs within a session and per-statement costs within a proc — it's one of the measured unit-cost surfaces in the "Cost & Contract > Unit Costs" tab.
+
+
+
+KIRO REcommendations:
+
+
+From COCO (UX gaps — 88→93)
+Light mode — one CSS token block swap. Immediate projector/boardroom unlock.
+Chart conclusions on all charts — one takeaway parameter. "So what?" answer.
+Typography floor → 12px minimum — WCAG compliance.
+Colorblind-safe severity — redundant shape encoding.
+PowerPoint/slide export — Brief is phone-first but leaders still paste into decks. Add downloadable slide bullets + chart data TSV.
+From the 99 roadmap (intelligence layer)
+Incident auto-correlation — Already has the incident object. Add automatic correlation (same warehouse + ±15 min window = one incident).
+Capacity forecasting with confidence intervals — Linear regression on p95 queue time → "days until sustained pressure."
+
+Proposed implementation:
+Implementation Summary
+1. Light Mode ✅
+File: 
+theme.py
+
+Split _TOKENS into _TOKENS_DARK and _TOKENS_LIGHT with complete light-mode color palette
+Light tokens use: white surfaces, dark ink, muted blue accents, lighter shadows, pastel semantic colors
+Added _detect_light_mode() using st.context.theme.type (Streamlit 1.30+)
+inject_theme() now selects the correct token set based on detected theme
+Added _LIGHT_BODY_CSS for widget-level overrides that need explicit light styling
+Set color-scheme CSS property for browser-native scrollbar adaptation
+2. Chart Takeaways ✅
+File: 
+charts.py
+
+bar_usd() — added takeaway=True parameter; auto-generates "Top: X $Y (Z% of $total)" caption
+bar_count() — added takeaway=True parameter; same pattern with counts instead of dollars
+(Already existed on: spend_trend, daily_stacked_usd, daily_stacked_count, hour_heatmap, waterfall_usd, events_by_day)
+File: 
+components.py
+
+Added chart_takeaway(text) helper for pages that want custom conclusion text below charts
+3. Typography Floor (12px minimum) ✅
+File: 
+theme.py
+
+Added --ow-floor: 0.74rem (~11.8px) design token
+Applied font-size: max(var(--ow-floor), 0.74rem) to all small text:
+.stCaption, small, [data-testid="stCaptionContainer"]
+.ow-kicker
+.ow-src-badge
+.ow-card__title
+.ow-stat__k
+.ow-chip
+Removed duplicate .ow-kicker definition (was 0.68rem, now enforced at floor)
+4. Colorblind-Safe Severity ✅
+File: 
+icons.py
+
+Added _SEVERITY_SHAPES dict: CRITICAL=filled circle, HIGH=triangle, MEDIUM=square, LOW=open circle, INFO=dash
+Added severity_indicator(severity) — returns inline SVG with color + shape
+Added severity_badge(severity, label) — inline badge with shape + text
+(Charts already handle this via the event_timeline function which uses alt.Shape with redundant shape encoding per severity)
+6. PowerPoint/Slide Export ✅
+File: 
+brief.py
+
+Added _build_slide_export() function that generates plain-text executive bullet summary from loaded Brief data
+Includes: KPI summary, open fires, top asks, next decision recommendation, source attribution
+Renders in a collapsed expander at the bottom of Brief with:
+Text area (copy-paste ready)
+Download button (.txt file with timestamp)
+Formatted for direct paste into PowerPoint/Keynote speaker notes
