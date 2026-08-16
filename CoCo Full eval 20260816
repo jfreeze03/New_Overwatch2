@@ -1,0 +1,157 @@
+I have enough context. Here's the Round 7 comparative analysis.
+
+---
+
+# OVERWATCH Panel Review — Round 7 (Comparative)
+
+## Scale of Change (R6 → R7)
+
+| Metric | R6 | R7 | Delta |
+|--------|----|----|-------|
+| Total files | 431 | **524** | +93 |
+| Migrations | V001–V071 | **V001–V082** | +11 |
+| Logic modules | 20 | **40** | +20 (doubled) |
+| Data/SQL modules | 14 | **20** | +6 |
+| Test files | ~130 | **~210** | +80 |
+| App Python files | ~80 | **103** | +23 |
+
+---
+
+## New Capabilities (V072–V082)
+
+| Migration | Capability | Category |
+|-----------|-----------|----------|
+| V072 | Entity-aware incident proposals (no more unrelated WH/task collapsing) | **Intelligence** |
+| V073 | Calendar triage windows (MTD/YTD matching Snowsight presets) | **UX** |
+| V074 | Operating workbench foundation (signal→evidence→owner→action→experiment→verify) | **Closed-loop** |
+| V075 | Security operating model (login/change facts, Trust Center snapshots, exception queue) | **Security** |
+| V076 | Anomaly materiality gate ($50 floor, 10-day baseline minimum, directional gating) | **Signal quality** |
+| V077 | App cost ledger (cost by CLIENT APPLICATION × USER from QUERY_ATTRIBUTION_HISTORY) | **Cost intelligence** |
+| V078 | AI usage timestamp cast fix (TIMESTAMP_TZ→NTZ coercion bug) | **Correctness** |
+| V079 | AI predicate + CoCo historical split (Cortex Code attributed to AI rate) | **Cost accuracy** |
+| V080 | Security change-risk ETL exclusion (stop flooding on routine ETL DDL) | **Signal quality** |
+| V081 | Unified experiment-verify (atomic savings ledger + action close + outcome book) | **Closed-loop** |
+| V082 | Query family company regrain (COMPANY on MART_QUERY_FAMILY_DAILY) | **Data accuracy** |
+
+## New Logic Modules
+
+| Module | Purpose |
+|--------|---------|
+| `exposure.py` | Outbound data-exposure governance (share classification, consumer inventory) |
+| `savings_rollup.py` | De-duplicated addressable-savings headline (overlap groups, confidence weighting) |
+| `cost_coverage.py` | Service classification and drill-coverage (which services can be drilled, which can't) |
+| `security.py` | Security domain posture scoring |
+| `workbench.py` | Operating workbench workflow logic |
+| `decision.py` | Decision studio (experiment design) |
+| `capacity.py` | Capacity planning |
+| `consolidation.py` | Warehouse consolidation analysis |
+| `least_privilege.py` | Least-privilege role analysis |
+| `dq.py` | Data quality scoring |
+| `anomaly_explain.py` | Anomaly explanation generation |
+| `call_tree.py` | Procedure call-tree cost analysis |
+| `date_windows.py` | Calendar window calculations |
+| `read_models.py` | Read model analysis |
+| `serverless_roi.py` | Serverless feature ROI |
+| `task_graph.py` | Task graph analysis |
+| `incident.py` | Incident lifecycle logic |
+
+---
+
+## What's Materially Different from R6
+
+### 1. The Closed Loop Is Now Complete
+
+R6 had the action layer (V051/V053) but lacked the end-to-end workflow. Now:
+
+- **V074 (Operating Workbench):** signal → evidence → owner → action → experiment → verified outcome. This is the persistent state machine.
+- **V081 (Unified Experiment-Verify):** atomic transaction that books SAVINGS_LEDGER + closes ACTION_QUEUE + records OPTIMIZATION_EXPERIMENTS verdict. The three ledgers that previously drifted are now settled in one transaction.
+
+This was my **#1 remaining criticism across all rounds** ("the closed loop is still open"). It's now closed.
+
+### 2. Security Is No Longer a Fig Leaf
+
+R1: "Security page is a fig leaf." R6: "upgraded to governance drift + client inventory." R7:
+
+- **V075:** Security operating model with login facts, change-risk facts, Trust Center snapshots, and exception queue
+- **V080:** ETL exclusion so the change-risk queue isn't flooded by routine truncate-reload
+- `security_center.py`: Full security operating UI (305 lines) with domain posture scoring
+- `exposure.py`: Outbound share/listing exposure classification
+- `least_privilege.py`: Role analysis
+
+This is now a genuine security posture page, not a compliance checkbox.
+
+### 3. Signal Quality Over Signal Quantity
+
+Two migrations (V076, V080) are purely about **reducing noise**:
+- V076 gates anomaly alerts on materiality ($50 minimum, 10-day baseline, directional gating)
+- V080 excludes routine ETL from the security change-risk queue
+
+This is maturity. Most monitoring tools add more alerts; mature ones remove false positives.
+
+### 4. Cost Attribution Reached Finance-Grade
+
+- V077: App cost ledger (CLIENT APPLICATION × USER attribution from QUERY_ATTRIBUTION_HISTORY)
+- V079: CoCo/CoWork properly attributed to AI rate
+- V082: Query family company regrain (fixing lossy heuristic)
+- `cost_coverage.py`: Explicit about which services CAN and CANNOT be drilled
+- `savings_rollup.py`: De-duplicated savings with overlap detection
+
+The system now acknowledges its own limitations ("this service cannot be drilled further") rather than presenting partial data as complete.
+
+---
+
+## Updated Scores
+
+| Dimension | R1 | R2 | R3 | R4 | R5 | R6 | R7 | Delta |
+|-----------|----|----|----|----|----|----|----|----|
+| **Overall** | 68 | 76 | 80 | 83 | 87 | 92 | **94** | +2 |
+| Engineering | 75 | 79 | 82 | 83 | 86 | 92 | **94** | +2 |
+| Architecture | 78 | 83 | 86 | 88 | 89 | 93 | **95** | +2 |
+| Executive usefulness | 72 | 80 | 82 | 84 | 86 | 91 | **93** | +2 |
+| Innovation | 45 | 62 | 67 | 70 | 72 | 85 | **88** | +3 |
+| Production readiness | 62 | 74 | 81 | 85 | 88 | 89 | **92** | +3 |
+| UI/UX | — | — | — | 7.0 | 8.0 | 8.5 | **8.5** | 0 |
+
+UX unchanged because these changes are backend/logic/data — no evidence of new theme or interaction work.
+
+---
+
+## What I Genuinely Dislike (Round 7)
+
+1. **210 test files is a maintenance liability.** The test suite has doubled since R6 but still carries the naming debt: `test_bug_round2.py`, `test_codex_r10.py`, `test_live_round3.py`, `test_batch_a_audit_fixes.py`. Named by trigger, not by domain. A new developer cannot find "all tests for the savings system" without grep. This needs a `tests/domain/` reorganization.
+
+2. **40 logic modules with no explicit dependency graph.** The logic layer doubled from 20 to 40 modules. Pure Python, no Streamlit — but no documented dependency ordering, no module index, no "here's what calls what." You need an `app/logic/README.md` or an import-graph test that enforces layering (e.g., `formulas` and `scoring` are leaf modules; `workbench` is a coordinator that may import others but nothing imports it).
+
+3. **The generator pattern still exists alongside the canonical-proc consolidation I recommended.** 11 new migrations (V072–V082) — are they still using the linked-list derivation pattern? V079 says "Re-derives SP_LOAD_PLATFORM_SCORE (V061)" and V082 says "re-derives SP_LOAD_MARTS_V27 (from V078)." The pattern persists. The consolidation into `snowflake/procs/` hasn't happened. The chain grows longer.
+
+4. **No evidence of CI/CD automation.** At 82 migrations with manual "owner applies in Snowsight" deployment, the operational risk hasn't changed. The Flyway adoption path is documented but still not live. Each new migration adds another manual step to the deployment checklist.
+
+---
+
+## Trajectory
+
+```
+Score
+ 95 ┤                                                          ╭── R7 (94)
+ 92 ┤                                                    ╭─────╯  R6 (92)
+ 87 ┤                                              ╭─────╯  R5 (87)
+ 83 ┤                                    ╭─────────╯  R4 (83)
+ 80 ┤                          ╭─────────╯  R3 (80)
+ 76 ┤                    ╭─────╯  R2 (76)
+ 68 ┤  R1 (68) ──────────╯
+    └────────────────────────────────────────────────────────────
+```
+
+The curve is flattening. R6→R7 is +2, the smallest single-round gain. This is expected: you're in diminishing returns territory. The big architectural leaps (delivery, closed-loop, design system, security operating model) are done. What remains is operational infrastructure (CI/CD, test reorganization, proc consolidation) and UX polish (light mode, chart conclusions, finding rows).
+
+---
+
+## What Separates 94 from 97+
+
+1. **Automated deployment pipeline** (Flyway live, not just documented) — +1
+2. **Test suite reorganization** into domain-based structure — +0.5
+3. **Canonical proc files** replacing the derivation chain — +0.5
+4. **UX: light mode + chart conclusions + finding rows** — +1
+5. **Multi-account / org-level views** — +1
+
+At 94, this is a reference-quality internal platform. The distance to 97+ is product infrastructure (CI/CD, packaging) and enterprise scale (multi-account). Those are business investments, not engineering problems.
