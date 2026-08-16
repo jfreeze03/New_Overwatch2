@@ -1,0 +1,154 @@
+I have a thorough understanding of the Operations page (1747 lines across 8 sections: Queries, Tasks, Warehouses, Contention, Change Impact, Release Compare, Pipeline SLA, and Emergency). Here are 20 impactful recommendations.
+
+---
+
+# 20 Recommendations for Operations
+
+## Category A: Operational Pulse (The DBA's First 10 Seconds)
+
+**1. Add a page-level "Operations health" KPI strip before any section loads.**
+The page opens directly into whichever section was last active (lazy_sections). There's no page-level pulse. Before the section nav, show 4 KPIs: **Query fail rate (24h) · Task fail count (24h) · Queue minutes (24h) · Active incidents**. These load from `MART_EXEC_BOARD` (already cached), so they're free.
+
+*Reasoning:* A DBA opening Operations at 7am needs "is anything on fire?" answered in 2 seconds. Currently they must navigate to the Queries section and wait for the summary to know if query failures spiked.
+
+**2. The Queries section should lead with FAILURES, not the general summary.**
+Lines 80-100 show the query summary (total count, p95, spill). But the DBA's morning question is "what broke?" not "how many queries ran?" Reorder to: failures first (with the timeline and error families), then the general summary, then the top-N table.
+
+*Reasoning:* The "normal state" (queries running fine) doesn't need attention. The abnormal state (failures) does. Leading with failures means a clean-slate morning is answered immediately with "0 failures" and the DBA moves on.
+
+**3. Task failures need a "last green run" timestamp per task.**
+The failure timeline (line 400+) shows when tasks failed. It doesn't show how long since they LAST SUCCEEDED. A task that failed today but ran fine yesterday is different from one that's been failing for 5 days straight. Add a `LAST_SUCCESS` column.
+
+*Reasoning:* Duration-of-failure is the triage priority signal. A new failure (just broke) gets investigated immediately. A chronic failure (broken for days) is either known or abandoned — different response.
+
+**4. The Emergency section is buried as the last section in a 7-section page.**
+Line 1742: Emergency levers (suspend WH, kill query, resource monitors) are behind the last section nav pill. In an actual emergency, nobody scrolls through 7 pills. Emergency should be accessible from a persistent "Emergency 🚨" button in the sidebar or page header — always one click away.
+
+*Reasoning:* The point of emergency controls is instant access under stress. Hiding them behind 6 other sections fails that requirement.
+
+---
+
+## Category B: Query Intelligence (Beyond Raw Metrics)
+
+**5. Add "query cost velocity" — $/hour for each top-N query family.**
+The top queries table shows total elapsed, total credits. But it doesn't show the RATE of spend. A query that ran once for 400 credits is different from one that runs every 5 minutes for 2 credits each (but 576/day). Show `$/hour` or `$/day` to surface recurring-expense queries.
+
+*Reasoning:* The most expensive queries aren't always the longest-running ones. They're the frequent ones. $/hour surfaces the chronic cost that dollar-per-execution misses.
+
+**6. Surface "query compilation ratio" as a health signal.**
+You already have compilation-time data in the query history. Queries spending >30% of their runtime in compilation are candidates for caching (query result cache) or plan stability issues. Show the top-10 compilation-heavy families with a "cache candidate" flag.
+
+*Reasoning:* Compilation cost is invisible waste that simple optimization (USE CACHED RESULT, materialized views) can eliminate. Most monitoring tools ignore it.
+
+**7. Add a "repeated identical queries" detector beyond the existing fingerprint view.**
+The current fingerprint drift detection (V014) looks at p95 regression. But it doesn't flag the anti-pattern of running the SAME query thousands of times when result caching should eliminate most executions. Show: "Query family ABC executed 4,200 times in 24h; cache hit rate: 2%."
+
+*Reasoning:* Low cache-hit rates on high-frequency queries are the single cheapest optimization target in Snowflake (enable result caching = instant savings).
+
+**8. Show "query queue time distribution" as a histogram, not just the aggregate.**
+Line 78 in the control room shows "Queued: X min" as a total. The Operations page should show the DISTRIBUTION: how many queries waited 0-1s, 1-5s, 5-30s, 30s+. This separates "occasional brief queuing" from "systematic undersizing."
+
+*Reasoning:* A p95 queue time of 8s could mean "everyone waits 8s" (warehouse undersized) or "one query waited 3 minutes while the rest were instant" (one-off contention). The histogram tells you which.
+
+---
+
+## Category C: Task & Pipeline Intelligence
+
+**9. Task-graph visualization needs a "cost overlay" — $/node on the DAG.**
+Lines 960-1000 build a task graph from TASK_VERSIONS. The topology is shown, but there's no cost dimension on it. Overlay $/run per node (from MART_TASK_NODE_DAILY) so the reader sees which parts of the pipeline are expensive vs cheap.
+
+*Reasoning:* A DAG without cost is a topology diagram. A DAG with cost is a budget allocation map. The latter tells you where to optimize.
+
+**10. Add "pipeline SLA prediction" — will this table make its deadline?**
+Line 589: Pipeline SLA shows current status (met/missed). But by the time it's missed, it's too late. Predict: "At current load rate, table X will miss its 8am SLA by ~20 minutes." Use the running average of load duration.
+
+*Reasoning:* Reactive SLA monitoring ("it's already late") is less valuable than predictive ("it's going to be late"). A 30-minute warning gives the DBA time to act (bump warehouse size, skip optional transforms).
+
+**11. The DQ row-volume monitor (line 525) should integrate with the Pipeline SLA view.**
+Row-volume anomalies and pipeline freshness SLAs are related: if a table's row volume dropped 80%, it's probably because the upstream pipeline failed. Currently these are separate panels. Cross-link them: when a volume anomaly fires, check if the same table has a failing SLA.
+
+*Reasoning:* Root-cause analysis requires correlating signals. A volume drop + an SLA miss on the same table is almost certainly the same incident. Showing them together saves investigation time.
+
+---
+
+## Category D: Warehouse Operations
+
+**12. The Warehouses section should show "utilization rate" per warehouse.**
+The current view shows credits consumed. It doesn't show: "This warehouse was active for 18 of 24 hours but only executing queries for 6 of those 18." The ratio of query-executing-time to billed-time is the utilization rate. Low utilization = idle waste.
+
+*Reasoning:* Credits consumed tells you cost. Utilization rate tells you efficiency. A warehouse burning 100 credits at 90% utilization is well-tuned. The same warehouse at 30% utilization is wasting 70 credits.
+
+**13. Add "quiet hours" detection per warehouse.**
+Show which warehouses burn credits in off-peak hours (e.g., 10pm-6am) with no queries running. This is the `idle_advisor` signal from Cost, but surfaced HERE where the DBA can see the warehouse operational context (what tasks run at night, whether auto-suspend is misconfigured).
+
+*Reasoning:* The Cost page says "this warehouse is idle." The Operations page should say "this warehouse is idle BECAUSE no tasks are scheduled between midnight and 5am but auto-suspend is set to 10 minutes, so it resumes on the hourly monitoring query and idles for 59 minutes each cycle."
+
+**14. Contention panel needs a "who's blocking whom" view, not just aggregate queue time.**
+Line 1737 calls `_contention_tab` which shows queue minutes and spill. But it doesn't show the LOCKING relationships: "Query A held a table lock for 45 seconds, blocking queries B, C, D." The lock-wait mart (V035) has this data.
+
+*Reasoning:* Aggregate queue time is a symptom. Specific lock holders are the cause. A DBA needs to know WHO to talk to (or which query to kill), not just that contention exists.
+
+---
+
+## Category E: Change Impact & Regression
+
+**15. Change Impact should show a "blast radius preview" BEFORE a change is deployed.**
+The current Change Impact section (line 1738) is reactive: it measures regressions AFTER a change happened. Add a "what-if" mode: "If I ALTER this table's clustering key, which queries will be affected?" using QUERY_HISTORY + ACCESS_HISTORY joins.
+
+*Reasoning:* The best time to prevent a regression is before deployment. A pre-change blast radius estimate turns Change Impact from a post-mortem tool into a planning tool.
+
+**16. Release Compare should auto-detect releases instead of requiring manual date input.**
+Line 472: the user picks a release date manually. But you have DDL change detection (V010, V033) — you KNOW when schema changes happened. Auto-populate a dropdown of recent change events: "3 schema changes on Aug 12, 7 on Aug 9" and let the user pick from detected releases.
+
+*Reasoning:* Manual date entry assumes the user knows when releases happened. Auto-detection assumes the system knows — which it does, from the change registry.
+
+**17. Change Impact needs a "regression resolved?" status tracker.**
+Currently it detects regressions. But there's no workflow for "regression detected → investigated → root cause found → fixed → verified back to baseline." Add a lifecycle status per regression finding so old, resolved regressions don't clutter the view.
+
+*Reasoning:* Without lifecycle status, the change impact view accumulates findings forever. After a month, every regression is "open" even if fixed weeks ago. That trains users to ignore the section.
+
+---
+
+## Category F: Usability & Performance
+
+**18. The page is 1747 lines — split into sub-modules like Cost did.**
+Cost refactored into `cost_parts/` (spend.py, contract.py, optimize.py, unit_costs.py). Operations at 1747 lines is harder to navigate, harder to test, and harder to maintain. Split into `ops_parts/queries.py`, `ops_parts/tasks.py`, `ops_parts/warehouses.py`, etc.
+
+*Reasoning:* A 1747-line file with 8 section functions, each 100-300 lines, is a maintenance burden. Changes to the task section risk breaking the query section through merge conflicts.
+
+**19. The incident routing panel (line 417) should link to the Control Room incident timeline.**
+When a task failure is routed to an incident, the DBA should be able to click through to the incident on the Control Room timeline to see the full ±30min context. Currently the routing panel is self-contained — it doesn't connect to the broader incident model.
+
+*Reasoning:* The incident is the same object whether viewed from Operations (task failure perspective) or Control Room (timeline perspective). Cross-linking them creates a unified investigation flow.
+
+**20. Add "Operations score" that complements the platform score.**
+The platform score (Overview) is a composite. Operations doesn't have its own domain score. Create one: "Operations health: 82/100" with named deductions (query fail rate above threshold: -5, task failures: -8, queue time: -4, stale pipelines: -3). Show it at the top of the page.
+
+*Reasoning:* A domain-specific score lets the Ops team track THEIR health over time, independent of cost or security. It also creates accountability: "our operations score dropped from 88 to 74 this week — what happened?"
+
+---
+
+## Priority Matrix
+
+| Rec | Impact | Effort | Do First? |
+|-----|--------|--------|-----------|
+| 1 (page-level KPI strip) | High | Low | **Yes** |
+| 2 (failures first) | High | Low | **Yes** |
+| 4 (emergency always accessible) | High | Low | **Yes** |
+| 18 (split into sub-modules) | High | Medium | **Yes** (maintainability) |
+| 3 (last green run per task) | High | Low | **Yes** |
+| 5 (query cost velocity $/hour) | High | Medium | Second pass |
+| 9 (cost overlay on DAG) | High | Medium | Second pass |
+| 12 (utilization rate per warehouse) | High | Medium | Second pass |
+| 16 (auto-detect releases) | Medium | Medium | Second pass |
+| 10 (pipeline SLA prediction) | High | High | Second pass |
+| 20 (operations domain score) | Medium | Medium | Second pass |
+| 14 (who's blocking whom) | Medium | Medium | Second pass |
+| 8 (queue time histogram) | Medium | Low | When touching Queries |
+| 6 (compilation ratio) | Medium | Low | When touching Queries |
+| 7 (repeated identical queries) | Medium | Medium | When touching Queries |
+| 15 (pre-change blast radius) | High | High | Third pass |
+| 13 (quiet hours per warehouse) | Medium | Medium | Third pass |
+| 11 (DQ + SLA cross-link) | Medium | Low | Third pass |
+| 17 (regression lifecycle) | Medium | Medium | Third pass |
+| 19 (incident cross-link) | Low | Low | When touching incidents |
