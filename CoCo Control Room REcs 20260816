@@ -1,0 +1,154 @@
+I now have a thorough understanding of the Control Room (866 lines, 6 sections: Action Center, Pulse, Incidents & Triage, Timeline & Movers, Freshness & Replay, Entity 360). Here are 20 recommendations.
+
+---
+
+# 20 Recommendations for Control Room
+
+## Category A: Morning Triage Speed (The First 30 Seconds)
+
+**1. Show a computed "morning verdict" before the section nav.**
+The page opens with a page_header and an undelivered-critical banner (good), then immediately drops into the section nav. There's no single "Platform: HEALTHY | WATCH | DEGRADED" signal above the pills. The DBA's first question is "do I need to act RIGHT NOW?" — answer it in one line before they choose a section.
+
+*Reasoning:* The platform score exists (on Overview). A derivative belongs here: "2 open criticals, 14 task failures since yesterday, delivery working" as a one-line verdict. Currently the DBA must click into Incidents & Triage to learn this.
+
+**2. The Pulse section should be the DEFAULT landing, not Action Center.**
+Line 315: sections start with "Action Center" (the workbench). But the Control Room's stated contract is "morning triage: what broke, what's burning." The Pulse (query health, failures, spill) is the "what broke?" answer. A DBA wants the 24h health check first, THEN the action queue.
+
+*Reasoning:* The Action Center is a workflow surface (persistent items, experiments). The Pulse is the reactive "what happened overnight" check. Morning triage is reactive first, then planned work. Land on Pulse; move to Action Center when the fires are handled.
+
+**3. The Pulse should show "compared to yesterday at this time" as a delta on every KPI.**
+Line 429-442: KPIs show absolute values (queries: 14,000, failed: 23, p95: 4.2s). But there's no "vs yesterday" or "vs same day last week" context. Add delta arrows: "Queries: 14,000 (↓12% vs yesterday)" so the DBA instantly sees whether today is normal.
+
+*Reasoning:* Without comparison, every number requires mental benchmarking ("is 14,000 queries a lot for this time?"). Deltas eliminate that cognitive load.
+
+**4. The "undelivered critical" banner should include HOW LONG it's been undelivered.**
+Line 294: shows `"{_und} critical alert(s) reached nobody (30+ min, no delivery)"`. This doesn't say WHEN the oldest undelivered critical was raised. "3 criticals undelivered, oldest raised 4 hours ago" creates appropriate urgency.
+
+*Reasoning:* "30+ min" is the detection threshold. The actual gap could be hours. The duration drives the response urgency — is this a new failure or has the team been blind all night?
+
+---
+
+## Category B: Incident Management (From Detection to Resolution)
+
+**5. Incidents need a timeline visualization, not just a table.**
+Lines 464+ show incidents as a table with KPIs (count, high severity, unrouted). But incidents have a lifecycle: detected → declared → mitigated → resolved. Show a Gantt-style timeline of open incidents with their duration bars, so the DBA sees "this one has been open for 3 days" at a glance.
+
+*Reasoning:* Duration is invisible in a table (you have to mentally subtract DETECTED_AT from now). A timeline makes long-lived incidents visually prominent — they're wider bars.
+
+**6. Incident proposals should show "evidence quality" — why this grouping makes sense.**
+Lines 67-105 generate incident declarations from proposal keys (rule family + entity). But the proposal view doesn't explain WHY these alerts belong together. Show: "3 alerts in the COST family on WH_ALFA_TRANSFORM_PRD within 2 hours" — the temporal and entity clustering logic should be visible.
+
+*Reasoning:* A DBA won't declare an incident they don't understand. Showing the grouping evidence builds confidence to click "Declare."
+
+**7. Add "incident reopen detection" — when a resolved incident's condition recurs.**
+Line 109: close is forward-only; reopening creates a new incident with `REOPENED_FROM`. But there's no automatic detection of "the alert condition that caused this incident just fired again." The DBA should see a banner: "Similar to resolved incident INC-0047 (3 days ago)."
+
+*Reasoning:* Recurring incidents are the strongest signal that a fix didn't work. Automatic correlation between new alerts and recently-resolved incidents is what makes incident management proactive rather than reactive.
+
+**8. The incident close workflow should capture "time-to-mitigate" separately from "time-to-resolve."**
+Line 108-121: close writes `RESOLVED_AT`. But mitigation (bleeding stopped) and resolution (root cause fixed) are different timestamps. A DBA who hot-fixes at 2am resolves the symptom; the engineering fix lands days later. Track both for honest MTTR reporting.
+
+*Reasoning:* MTTR (mean time to resolve) is meaningless if it blends "we stopped the bleeding in 10 minutes" with "we shipped the permanent fix 3 weeks later." Separate TTM (time to mitigate) from TTR gives leadership honest operational metrics.
+
+---
+
+## Category C: Timeline & Correlation (Understanding What Happened)
+
+**9. The incident timeline should show RESOURCE CONSUMPTION alongside events.**
+The timeline (Timeline & Movers section) shows alerts + task failures + DDL on one axis. But it doesn't overlay CREDIT CONSUMPTION. A spend spike at 2pm correlating with a DDL change at 1:55pm is the "this change caused the cost" signal.
+
+*Reasoning:* Events without resource context are just a list. Events correlated with spend are causal hypotheses. The credit-per-hour series is already available in facts.
+
+**10. The "Day Replay" feature is hidden behind a toggle — promote it.**
+Line 848: `st.toggle("Load day replay", ...)`. This is the "what changed on any day across all domains" view — arguably the most powerful investigation tool on the page. But it requires: navigating to Freshness & Replay section, then flipping a toggle. It should be promoted to a top-level section or at minimum, the toggle should default ON for yesterday.
+
+*Reasoning:* The best feature on the page has the worst discoverability. Six reads behind a toggle that nobody knows to click is wasted engineering.
+
+**11. Day Replay should generate a prose "executive incident report" for any chosen day.**
+Lines 182-226 render tables for each domain. But there's no narrative synthesis. When a director asks "what happened yesterday?" the DBA has to assemble the answer from 6 tables. Generate a 3-sentence narrative: "Yesterday saw a $800 spend increase driven by WH_TRANSFORM (+$600). 3 tasks failed in the ANALYTICS pipeline. No DDL or security changes."
+
+*Reasoning:* The replay SHOWS data across domains. It doesn't TELL you the story. A Cortex-generated narrative from the `replay_headlines` data (you already have the structured headlines) would be trivial to generate but transformative for communication.
+
+---
+
+## Category D: Spend & Anomalies
+
+**12. Spend movers should show "is this mover EXPECTED or UNEXPECTED?"**
+Lines 800-840 render the window-vs-prior comparison sorted by absolute delta. But all movers are treated equally. A warehouse that doubles because a known monthly batch ran is expected. One that doubles for no configured reason is unexpected. Cross-reference against scheduled changes or annotations.
+
+*Reasoning:* Not all spend increases are problems. The DBA needs to distinguish "this is normal monthly processing" from "this is unexplained." Without that distinction, the entire movers panel is noise on batch days.
+
+**13. Anomaly explanations should appear INLINE with the mover, not in a separate panel.**
+The anomaly sweep generates Cortex-grounded explanations (per FEATURES.md). But on the Control Room spend movers view, the explanation isn't shown next to the anomalous warehouse. The DBA should see: "WH_ALFA_TRANSFORM: +$600 (+96%) — *likely caused by 3 new dbt models added Tuesday*" inline.
+
+*Reasoning:* An anomaly detection that makes you navigate elsewhere to understand WHY defeats the purpose of the Control Room's "one-screen triage" contract.
+
+**14. The materiality gate ($50 floor) should be VISIBLE in the UI.**
+V076 added an anomaly materiality gate. But the DBA doesn't know the threshold. When they see "no anomalies" they don't know if that means "nothing unusual" or "unusual things happened but below $50." Show: "Anomalies: 0 above $50/day threshold (2 below threshold suppressed)."
+
+*Reasoning:* Suppressed signals should be transparently suppressed. Hidden filtering creates false confidence ("everything is fine" vs "small anomalies exist but are filtered").
+
+---
+
+## Category E: Entity 360 & Watchlist
+
+**15. Entity 360 should show "change history" for the viewed entity.**
+Line 853-865: Entity 360 renders cross-domain context for a single entity. But it doesn't show WHAT CHANGED on that entity recently. If I'm looking at a warehouse, show: "Last config change: resized from M→L on Aug 10 by H21427."
+
+*Reasoning:* The 360 view is an investigation tool. Investigations start with "what changed?" Every entity has a change history (warehouse events, DDL, grants). Surface the last 3 changes.
+
+**16. The Watchlist should support "threshold alerts" — notify me when this entity breaches X.**
+Line 864: the watchlist is a persistent saved-entities list. But it's passive — you have to open it to see status. Let users set a per-entity threshold: "Alert me if WH_ALFA_QUERY exceeds $200/day." This creates ad-hoc monitoring without global alert rules.
+
+*Reasoning:* The alert system is global (all warehouses, all rules). But a DBA investigating a specific warehouse needs temporary focused monitoring. A watchlist threshold fills that gap between "I'm investigating this" and "alert me if it gets worse."
+
+---
+
+## Category F: Performance & Usability
+
+**17. The 6-section pill bar is too wide on standard screens.**
+Six sections ("Action Center", "Pulse", "Incidents & triage", "Timeline & movers", "Freshness & replay", "Entity 360") create a crowded pill bar that wraps on screens < 1400px. Shorten labels: "Actions", "Pulse", "Incidents", "Timeline", "Freshness", "Entity".
+
+*Reasoning:* "Incidents & triage" is 17 characters; "Incidents" is 9. On the primary triage page that a DBA visits 5x/day, every pixel of navigation width matters. The meaning is clear from the shorter form.
+
+**18. The batch-fetch pattern (run_batch) should also cover the Timeline section.**
+Lines 141-156 (Day Replay) use run_batch for parallel reads. But the Timeline section (event_timeline + spend movers) makes sequential reads. Apply the same parallel batch pattern.
+
+*Reasoning:* The Timeline & Movers section is the second most common investigation path (after Pulse). Serial reads here add 2-4 seconds of sequential latency that parallel batching would eliminate.
+
+**19. The "section_filter_contract" explanations are too verbose for repeated visitors.**
+Lines 319-350: every section shows which filters apply/don't apply. This is useful on first visit but becomes noise on the 50th visit. Collapse these into a small icon tooltip (ⓘ) instead of inline captions that take vertical space on every load.
+
+*Reasoning:* Filter applicability is important to understand once. After that, it's chrome noise that pushes actual data below the fold. Progressive disclosure: show it on hover/click, not always.
+
+**20. Add "time in this state" to the Freshness board.**
+Line 229-271: Freshness shows STATUS (OK/STALE/NOT LOADED) and HOURS_SINCE_LOAD. But it doesn't show "how long has this source BEEN stale?" A source that went stale 10 minutes ago is different from one that's been stale for 3 days. Add a "STALE_SINCE" column.
+
+*Reasoning:* HOURS_SINCE_LOAD tells you when data last arrived. STALE_SINCE tells you when the problem started. The former is a measurement; the latter is the incident duration. A DBA triaging stale sources needs to know which ones just broke (investigate now) vs which ones have been broken for days (probably known, lower priority).
+
+---
+
+## Priority Matrix
+
+| Rec | Impact | Effort | Do First? |
+|-----|--------|--------|-----------|
+| 1 (morning verdict line) | High | Low | **Yes** |
+| 2 (Pulse as default landing) | High | Low | **Yes** |
+| 3 (vs-yesterday deltas on Pulse) | High | Medium | **Yes** |
+| 4 (undelivered age, not just count) | High | Low | **Yes** |
+| 10 (promote Day Replay) | High | Low | **Yes** |
+| 13 (inline anomaly explanations) | High | Medium | **Yes** |
+| 17 (shorter section labels) | Medium | Low | **Yes** |
+| 14 (visible materiality gate) | Medium | Low | **Yes** |
+| 11 (narrative for Day Replay) | High | Medium | Second pass |
+| 5 (incident timeline Gantt) | High | High | Second pass |
+| 9 (credits on event timeline) | High | Medium | Second pass |
+| 20 (STALE_SINCE duration) | Medium | Low | Second pass |
+| 12 (expected vs unexpected movers) | Medium | Medium | Second pass |
+| 15 (entity change history) | Medium | Medium | Second pass |
+| 6 (proposal evidence quality) | Medium | Medium | Third pass |
+| 7 (reopen detection) | Medium | High | Third pass |
+| 8 (TTM vs TTR separation) | Medium | Medium | Third pass |
+| 16 (watchlist threshold alerts) | Medium | High | Third pass |
+| 18 (batch-fetch for Timeline) | Low | Low | When touching Timeline |
+| 19 (filter contract → tooltip) | Low | Low | When touching sections |
