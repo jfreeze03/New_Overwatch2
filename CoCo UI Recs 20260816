@@ -1,0 +1,262 @@
+I now have comprehensive understanding of the design system (theme.py: 288 lines), charting system (charts.py: 1197 lines), and the overall layout/component architecture. Here are 40 recommendations.
+
+---
+
+# 40 Recommendations for Layout, Design, Colors, Charts, Drilldowns & Flow
+
+## Category A: Light Mode & Theme Resilience
+
+**1. Add a light-mode token layer — the single highest-impact visual change.**
+Your entire token system (`_TOKENS`) is dark-only. There's no `:root[data-theme="light"]` alternative. In a boardroom projector, conference room display, or direct-sunlight laptop, the app is unreadable. `status_colors.py` already has `_LIGHT_EQUIV` pairs — the readiness is there.
+
+*Reasoning:* Dark mode is a developer preference. Light mode is a presentation requirement. Until this exists, every executive demo requires dimmed lights.
+
+**2. Respect `st.context.theme.type` to auto-switch tokens.**
+Streamlit exposes the user's system preference. Inject `_TOKENS_LIGHT` when `theme.type == "light"` instead of always injecting the dark block. No manual toggle needed.
+
+*Reasoning:* Streamlit-in-Snowflake inherits the Snowsight theme. If Snowsight ships a light mode, your app should follow automatically.
+
+**3. The accent gradient (`var(--ow-accent2)` to `var(--ow-accent)`) needs a single-color fallback.**
+The gradient from teal to blue is beautiful. But on the active section pill label, dark text on a gradient background fails WCAG AA when the gradient is at its lighter midpoint. Add `color:#0f172a; text-shadow:0 0 1px rgba(0,0,0,0.12)` to ensure legibility.
+
+*Reasoning:* Line 207 sets `color:#0f172a` on active labels. But the gradient's teal midpoint is lighter than either endpoint — the contrast ratio dips below 4.5:1 at that point.
+
+---
+
+## Category B: Layout & Spatial Hierarchy
+
+**4. Increase the maximum container width from 1360px to 1440px.**
+Line 45: `.block-container { max-width:1360px; }`. On a 2560×1440 display (standard for data professionals), this leaves 560px of unused space on each side. At 1440px, tables and charts have more room without looking stretched.
+
+*Reasoning:* Data-dense applications benefit from horizontal space. OVERWATCH is a data app. The current cap wastes the widest monitors.
+
+**5. Add a visual "zone" system — hero zone (KPIs), work zone (tables/charts), meta zone (captions).**
+Currently every element gets the same spacing (`gap:0.55rem`). But KPIs should have more breathing room than data tables. Define 3 density zones: hero (more space), work (current), meta (compact). Apply automatically based on component type.
+
+*Reasoning:* Uniform spacing creates visual monotony. Variable spacing creates hierarchy — the eye naturally lands on the items with more surrounding space.
+
+**6. The sidebar active-page indicator (inset box-shadow) is too subtle.**
+Line 243: `box-shadow:inset 3px 0 0 var(--ow-accent)`. On a dark sidebar, a 3px blue inset is easy to miss. Increase to 4px and add a subtle background tint: `background:linear-gradient(90deg,rgba(96,165,250,0.12),transparent)`.
+
+*Reasoning:* Navigation orientation depends on knowing WHERE you are. The active indicator must be immediately visible in peripheral vision — a 3px line isn't sufficient.
+
+**7. Add a "page transition" animation between sections.**
+Line 254: stale elements get `opacity:0` on section switch. But the NEW section just appears (no enter transition). Add: `.element-container { animation: ow-appear 100ms ease-out; }` with a subtle translateY(3px) origin.
+
+*Reasoning:* Instantaneous content replacement feels abrupt. A 100ms fade-in feels intentional. The difference between "the page glitched" and "the content updated" is one animation.
+
+---
+
+## Category C: Color System & Severity
+
+**8. Unify the traffic-light palette across charts, cards, and sidebar.**
+The Design Review (rec A1) flagged: "CRITICAL renders as different reds (`#fb7185` / `#ef4444` / `#f87171`) across surfaces." Your token layer defines `--ow-bad:#f87171`. But Altair charts use `palette.BAD` which may differ from the token. Enforce: ONE hex per severity, referenced everywhere.
+
+*Reasoning:* A DBA crossing from Alerts (card red) to the timeline (chart red) to the sidebar (indicator red) should see the SAME red. Three different reds subconsciously read as three different severities.
+
+**9. Add colorblind-safe redundant encoding for severity.**
+The Design Review (rec A2): "severity is color-only on the event timeline dots, KPI stripes, and sidebar." Add shape redundancy: CRITICAL=filled circle, HIGH=triangle, MEDIUM=open circle, LOW=dash. Use your SVG icons inline.
+
+*Reasoning:* ~8% of males have some color vision deficiency. Red/amber on a dark background is the worst-case axis for deuteranopia. Shape is free and universal.
+
+**10. The category color palette for charts needs stabilization at 5, not 8.**
+Line 60-61: category range has 8 colors. But human perception reliably distinguishes ~5 categorical hues. The 6th-8th colors (`#a3e635`, palette.HIGH) are too close to existing entries under certain lighting. Cap at 5 and group the rest as "Other."
+
+*Reasoning:* The "boss chart" problem from R1 persists in principle. Any chart with >5 series becomes confetti. A 5-color cap forces aggregation, which improves readability.
+
+---
+
+## Category D: Typography & Readability
+
+**11. Raise the minimum text size floor from 0.66rem to 0.72rem.**
+Line 178: `.ow-triage-title small { font-size:0.66rem; }`. At 10.5px on a standard display, this is below the WCAG recommendation for readable text. Other small elements (0.72rem) are fine — standardize the floor.
+
+*Reasoning:* A single line of text at 10.5px that carries operational context ("Filter: company + days") is unreadable at arm's length on a 27" monitor.
+
+**12. The metric value size (1.62rem) vs the card value size (1.55rem) should be unified.**
+Line 67: `stMetricValue` at 1.62rem. Line 91: `.ow-card__value` at 1.55rem. These render side by side on some pages. The 4.5% size difference creates a subtle "something's off" feeling without being obviously different enough to look intentional.
+
+*Reasoning:* Two nearly-but-not-quite-identical sizes read as inconsistency, not hierarchy. Either make them the same (unified component) or make them obviously different (1.6 vs 1.2).
+
+**13. Add a "data paragraph" style for inline text with mixed numbers and prose.**
+Many panels show captions mixing prose with inline numbers: "Spend is $12,400 (+8%) against a $15,000 budget." Currently these all use `st.caption` (muted color, small). The NUMBERS within should be optically heavier (semibold, tabular-nums) while the prose stays light.
+
+*Reasoning:* When numbers and prose share the same weight, the eye can't quickly scan for the data. Selective bolding of inline numbers improves scanability by 2-3x.
+
+---
+
+## Category E: Charts — From Data to Insight
+
+**14. Every chart should carry a machine-generated "takeaway" sentence.**
+The Design Review (rec 15, PARTIAL) noted: "~13 charts render bare with no takeaway." Add a function: `chart_takeaway(data, chart_type) → str` that returns: "**Spend peaked on Aug 12 (+$800), driven by WH_TRANSFORM.**" Render it above the chart.
+
+*Reasoning:* A chart without a conclusion is work. A chart with a conclusion is information. The difference is one sentence that tells you what to look at.
+
+**15. Line charts should annotate significant events on the time axis.**
+The spend trend shows daily USD. But it doesn't mark when things HAPPENED (config changes, alert fires, deployments). Add vertical rule markers at significant events with hover tooltips.
+
+*Reasoning:* A spike is just a spike until you can see "this is where WH_TRANSFORM was resized" on the same axis. The correlation becomes instant.
+
+**16. The heatmap needs a clearer "zero vs missing" distinction.**
+Line 39: `_HEATMAP_RANGE` starts at `#451a03` (deep orange) for low-but-nonzero. But the distinction between "no data" (page background) and "very low value" (dark orange) is too subtle on the dark background.
+
+*Reasoning:* A DBA reading the hour-of-day heatmap needs to distinguish "no queries ran" from "1 query ran." If both read as "dark," the signal is lost.
+
+**17. The "boss chart" (top cost drivers) should use a bar chart, not a multi-colored area/line.**
+If this chart shows 6+ warehouses as colored series, replace with a horizontal bar chart sorted by magnitude. Bars + single-color with the top 1-2 highlighted in accent is infinitely more readable than a 9-color spaghetti chart.
+
+*Reasoning:* Bar charts are the correct chart type for categorical comparison. Multi-series area charts are for showing temporal patterns across categories. "Which is biggest" → bars. "How do they change together" → lines.
+
+**18. Sparklines need a baseline reference (zero line or budget pace).**
+`spark_svg` (from components) renders a polyline with area fill. But there's no reference line. A sparkline without a reference shows DIRECTION only. With a reference (budget pace, zero, or prior period), it shows direction + position relative to a goal.
+
+*Reasoning:* A sparkline going up is ambiguous (good or bad?). A sparkline going up AND crossing a budget line is clearly bad.
+
+---
+
+## Category F: Drilldowns & Navigation
+
+**19. Every table should support "click a row → navigate to detail" consistently.**
+Some tables use `selectable_table` (row click → detail). Others use `styled_table` (no click). The inconsistency teaches users to NOT click rows (because sometimes nothing happens). Make all data tables clickable, even if the action is just expanding an inline detail below the row.
+
+*Reasoning:* Consistent affordances build muscle memory. If SOME tables are clickable, users eventually stop trying on the ones that aren't — missing navigation opportunities.
+
+**20. Add breadcrumbs showing the drill path.**
+When a user navigates: Overview → Cost & Contract > Optimization > WH_ALFA_QUERY detail — there's no visual trail of where they are. Add: `OVERWATCH > Cost & Contract > Optimization > WH_ALFA_QUERY` at the top of the detail view.
+
+*Reasoning:* Deep drilldowns without breadcrumbs create "where am I?" disorientation. The user loses context and can't easily back up one level.
+
+**21. Cross-page navigation should preserve the source page as a "back" link.**
+`request_navigation("Operations", "Queries")` sends the user there. But there's no "← Back to Cost & Contract" button at the destination. Store the source and render a back affordance.
+
+*Reasoning:* Without "back," cross-page links feel like losing your place. Users avoid them because they don't want to lose context. A back link makes exploration safe.
+
+**22. Entity 360 should be accessible FROM any table that mentions a warehouse, user, or database.**
+Currently Entity 360 lives on Control Room. But every table on every page contains entity names. A warehouse name in the Cost table should be a link to "investigate this warehouse" (Entity 360 with that entity pre-filled).
+
+*Reasoning:* The investigation tool (Entity 360) is only reachable from one page. The need to investigate arises from EVERY page. The tool should be universally accessible from any entity mention.
+
+**23. Add "drill into time" — clicking a chart date point should filter all tables to that date.**
+Click August 12 on the spend chart → all tables below filter to August 12's data. This is the "temporal drill" pattern that makes charts interactive rather than decorative.
+
+*Reasoning:* A spike on August 12 makes the user think "what happened that day?" Currently they have to manually set a date filter. Chart clicks should do it automatically.
+
+---
+
+## Category G: Flow & Progressive Disclosure
+
+**24. Pages should have a "page-level verdict" — one semantic sentence before any content.**
+Every page opens with a `page_header`. But the header is static ("Cost & Contract: Where the money goes..."). Add a DYNAMIC line below it: "You're 8% over budget pace. Top action: Tighten WH_ALFA_QUERY auto-suspend ($200/month)." This changes on every visit.
+
+*Reasoning:* A static description tells you what the page IS. A dynamic verdict tells you what the page MEANS TODAY. The latter drives action without requiring the user to read anything else.
+
+**25. The 6-8 section pill bar wraps poorly on 1280px laptops.**
+At 1280px (13" MacBook), 6+ pills with labels like "Incidents & triage" or "Freshness & replay" overflow and wrap to two lines, consuming 60px+ of vertical space above the fold. Shorten all labels to ≤12 characters or use icons alongside abbreviated text.
+
+*Reasoning:* The section nav is a fixed cost on every page. On narrow screens, it pushes content below the fold. Compact labels preserve vertical real estate.
+
+**26. Provide a "skip to content" affordance when the filter toolbar is visible.**
+Some pages show a filter toolbar (company, days, warehouse, database, schema) before any data. On first visit these are necessary. On the 50th visit, they're 60px of noise above the fold. Add a "collapse filters" toggle that remembers preference.
+
+*Reasoning:* Power users have stable filters. Showing the toolbar every time is chrome noise for them. Collapsing it (with a tiny expand button) gives back the fold.
+
+**27. The `lazy_sections` pattern should show a BADGE with item count or status per section.**
+Line 96 in components: `lazy_sections` renders pill labels. But the label "Alerts" doesn't tell you if there are 0 or 50 open alerts without clicking. Show: "Alerts (7)" or "Tasks ⚠" to preview section content from the nav bar.
+
+*Reasoning:* Section badges eliminate "exploration clicks" — the user knows which section needs attention without opening each one.
+
+---
+
+## Category H: Data Tables & Formatting
+
+**28. Tables need consistent column width allocation — don't let one column dominate.**
+Streamlit's dataframe renders give equal width to all columns by default. A WAREHOUSE_NAME column (30 chars) alongside a STATUS column (6 chars) wastes 70% of the STATUS column's allocated width as whitespace.
+
+*Reasoning:* Even column widths waste horizontal space and make wide tables scroll unnecessarily. Proportional allocation based on content length fits more information above the fold.
+
+**29. Delta columns (CHANGE, DELTA_USD, PCT_CHANGE) need universal arrow + color treatment.**
+The Design Review (rec A3, CONFIRMED): primary scan targets render as flat monochrome signed numbers. `delta_css` exists in `status_colors.py`. `is_delta_column` exists. Apply universally via `styled_table`.
+
+*Reasoning:* +$40,000 and -$40,000 should be INSTANTLY distinguishable. Currently they differ by one character (a minus sign). Color + arrow makes the distinction 50ms instead of 500ms.
+
+**30. Add "pin columns" for identity columns (WAREHOUSE_NAME, USER_NAME) when tables scroll.**
+Wide tables on narrow screens require horizontal scroll. When scrolling right, the identifying column (the name) disappears, making rows meaningless. Pin the first column.
+
+*Reasoning:* A row of numbers without knowing WHICH entity they describe is useless. Pinned identity columns maintain context during horizontal scroll.
+
+---
+
+## Category I: Loading States & Performance Perception
+
+**31. Show skeleton loaders instead of blank space during data fetch.**
+When a section loads, there's a brief empty space before content appears. Render a ghosted card placeholder (gray rectangles mimicking the expected layout) that gets replaced by real content.
+
+*Reasoning:* 300ms of blank space feels broken. 300ms of a skeleton feels like "data is loading." The perceived performance improves even if actual load time is identical.
+
+**32. Show "query in progress" with elapsed time for slow reads.**
+Some ACCOUNT_USAGE reads take 5-15 seconds. During that time, nothing is visible. Add a subtle indicator: "Loading query families... (4.2s)" so the user knows the app isn't frozen.
+
+*Reasoning:* An unresponsive interface for 10 seconds creates anxiety ("is it broken?"). A loading indicator with elapsed time sets expectations ("it's working, just slow").
+
+**33. The page should NOT fully re-render when changing a filter that only affects one section.**
+Streamlit reruns everything on any widget change. But `lazy_sections` means only one section renders at a time. If only the visible section's data depends on the changed filter, the other sections shouldn't re-fetch. Your caching handles this, but the visual re-render of the section nav and header still flickers.
+
+*Reasoning:* Visual stability during interaction builds confidence. Flickering on every filter change undermines the feeling of solidity.
+
+---
+
+## Category J: Export & Presentation
+
+**34. Add a `@media print` stylesheet.**
+There's no print styling. `Cmd+P` on any page renders Streamlit's sidebar, dark background, and interactive widgets — none of which belong on paper. Add: `@media print { sidebar: hidden; background: white; charts: rendered as static images; footer: timestamp + company. }`
+
+*Reasoning:* Executives print things. Screenshots are the current workaround. A proper print stylesheet makes the app a self-contained report generator.
+
+**35. Chart exports should include the chart title and takeaway text.**
+When downloading a chart as PNG (Altair's built-in), only the chart renders — no title, no context, no timestamp. Wrap the chart in a container that includes the title bar and a "Generated by OVERWATCH, Aug 16 2026" footer.
+
+*Reasoning:* A chart screenshot shared in Slack without context loses its meaning. A self-captioned chart carries its own explanation.
+
+**36. Add "presentation mode" — full-screen, one-chart-at-a-time with click-to-advance.**
+For boardroom presentations, the director wants: one big chart per screen, click to advance to the next metric. Currently they screenshot 8 charts and make a PowerPoint. A built-in presentation mode eliminates that workflow.
+
+*Reasoning:* If your audience makes PowerPoints from your dashboards, you've failed to be the presentation tool. Cut out the intermediary.
+
+---
+
+## Category K: Micro-Interactions & Polish
+
+**37. Add hover states that reveal actions on table rows.**
+Most tables are static. On hover, rows should subtly highlight AND reveal contextual actions: "Drill →" or "Add to watchlist" or "Investigate." This is the "actions-on-hover" pattern from every modern data tool.
+
+*Reasoning:* Discoverable actions increase feature usage. A user who doesn't know they can drill into a warehouse will never drill into a warehouse. A hover hint teaches them.
+
+**38. The brand dot animation (pulse) should be conditional on platform health.**
+Line 184: `.ow-brand-dot` pulses on a 2.8s cycle unconditionally. Make it status-aware: pulsing = healthy (all systems green). Solid = degraded. Rapid pulse = critical. The heartbeat becomes a system health indicator.
+
+*Reasoning:* The brand dot is visible on every page (sidebar). If it encodes health, it becomes a persistent ambient status indicator — the user learns the system's state without looking at any metric.
+
+**39. Add subtle transitions on section content entry.**
+Line 254 hides stale content. But new content has no entrance animation. Add: `@keyframes ow-enter { from { opacity:0; transform:translateY(4px) } to { opacity:1; transform:none } }` with 80ms duration on incoming elements.
+
+*Reasoning:* Enter animations communicate causality ("I clicked, this appeared"). Without them, content changes feel instantaneous and disconnected from the user's action.
+
+**40. The KPI card hover effect (shadow2) should also show a subtle border glow on the severity stripe.**
+Line 65: cards hover with enhanced shadow. But the severity stripe (the most important visual signal) doesn't change on hover. On hover, intensify the stripe: `opacity:0.85 → opacity:1; width:3px → width:4px` with transition.
+
+*Reasoning:* Hover effects should reinforce the card's identity. The stripe IS the card's semantic identity. Making it react to hover emphasizes what matters most about the card.
+
+---
+
+## Priority Matrix
+
+| Tier | Recommendations | Total Impact |
+|------|----------------|-------------|
+| **Do First** (High impact, Low effort) | 1, 8, 11, 14, 25, 27, 29, 38 | Theme, color unity, readability, chart takeaways |
+| **Second Pass** (High impact, Medium effort) | 2, 5, 6, 7, 9, 15, 17, 18, 19, 22, 24, 31 | Layout zones, annotations, universal drill, loading states |
+| **Third Pass** (Medium-High impact, Medium-High effort) | 3, 4, 10, 12, 13, 16, 20, 21, 23, 26, 28, 30, 34, 37, 39, 40 | Polish, navigation, responsive, print |
+| **Aspirational** (High impact, High effort, Streamlit-constrained) | 32, 33, 35, 36 | Presentation mode, filter isolation |
+
+**Single highest-impact change:** #1 (Light mode). It unlocks an entire usage context (presentations, projectors, printing) that is currently impossible.
+
+**Best effort/impact ratio:** #14 (Chart takeaways) + #29 (Delta column styling). Both are low-effort changes that transform passive data display into active communication. Together they answer "so what?" and "which direction?" — the two questions every data consumer has.
