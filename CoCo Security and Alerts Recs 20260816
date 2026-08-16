@@ -1,0 +1,255 @@
+I now have thorough context on both pages (Security: 1018 lines, 10 sections; Alerts: 1021 lines with delivery health, lifecycle, drawer, re-check, closed-loop, rules, history, native delivery). Here are 40 recommendations.
+
+---
+
+# 40 Recommendations for Security & Alerts
+
+## SECURITY — Category A: Threat Detection (From Posture to Active Monitoring)
+
+**1. Add "impossible travel" detection — same user authenticates from geographically distant IPs within an impossible timeframe.**
+V075 loads login facts but only shows failed logins and MFA gaps. True security monitoring detects: "User X logged in from US at 10:00 and from Europe at 10:15." This is a compromised credential signal.
+
+*Reasoning:* MFA gaps and failed logins are hygiene. Impossible travel is threat detection. The former prevents problems; the latter catches active attacks.
+
+**2. Add "privilege escalation" detection — users who gained elevated roles outside normal change windows.**
+GRANTS_TO_USERS history shows when ACCOUNTADMIN/SECURITYADMIN was granted. But there's no alert for "this happened outside a known deployment window" or "this user never had this role before." Compare current grants against a 30-day baseline.
+
+*Reasoning:* A legitimate break-glass grant happens during an incident. An illegitimate one happens at 3am on a Saturday. Time-context makes the difference detectable.
+
+**3. Add "data exfiltration risk scoring" — users who UNLOAD or COPY INTO stage unusual volumes.**
+You have egress monitoring (line 975). But egress alone doesn't score RISK. Combine: unusual volume + unusual hour + unusual destination + non-service-role user = high risk score. A service account copying to a known stage at 2am is normal. A human account copying 500GB to a personal stage at 11pm is not.
+
+*Reasoning:* Egress volume without behavioral context generates false positives from routine ETL. Risk scoring separates legitimate large transfers from suspicious ones.
+
+**4. The "Change Risk" queue should show "who approved this change?" not just "who made it."**
+V080 filters ETL noise. But for non-ETL changes (real DDL by humans), there's no approval trail. Show: "DROP TABLE by H21427 — was this in a change ticket? No JIRA tag found in query comment." This integrates with governance-as-code workflows.
+
+*Reasoning:* A destructive DDL by itself isn't always bad. A destructive DDL with no associated change ticket IS a governance gap. The question isn't "did it happen" but "was it authorized?"
+
+**5. Add "dormant-then-active" user detection — accounts that were unused for 90+ days and suddenly became active.**
+You have access history and dormant user lists. But you don't detect the TRANSITION: "This account was dormant for 6 months and just ran 400 queries today." That's a compromised credential pattern.
+
+*Reasoning:* A dormant account reactivating is one of the strongest indicators of credential compromise. It requires zero new data — just a comparison between recent activity and historical baselines.
+
+---
+
+## SECURITY — Category B: Posture & Governance Scoring
+
+**6. The governance drift score should decompose by DOMAIN — not one number for everything.**
+Currently `governance_drift()` produces one composite score. But "MFA gaps" and "warehouses without monitors" are different governance domains with different owners. Show: Identity: 85 | Infrastructure: 72 | Access: 91 — so each team knows THEIR posture.
+
+*Reasoning:* A composite score tells leadership "we have a problem." Domain decomposition tells TEAMS "this is YOUR problem." The latter creates accountability.
+
+**7. Add "governance velocity" — is posture IMPROVING or DEGRADING over time?**
+The drift score is a point-in-time snapshot. There's no "we were 72 last month, 78 this month — improving." Show a 30-day trend line for the governance score.
+
+*Reasoning:* Direction matters more than position. A score of 70 improving by 5 pts/month is better than a score of 80 declining by 3 pts/month.
+
+**8. The Trust Center section should show "which findings are ACTIONABLE vs INFORMATIONAL."**
+Line 987: Trust Center shows scanner posture and deltas. But scanner findings mix critical gaps with best-practice suggestions. Separate them: "3 findings require action (failed scanners)" vs "7 findings are recommendations (passed with notes)."
+
+*Reasoning:* A Trust Center with 10 findings sounds bad. A Trust Center with 3 actionable findings and 7 informational notes sounds manageable. The framing drives response.
+
+**9. Add a "compliance readiness" checklist that maps findings to frameworks (SOC2, HIPAA, PCI).**
+Security findings exist in isolation. But an auditor asks: "Are you SOC2 compliant?" Map each governance gap and Trust Center finding to the compliance framework control it violates. Show: "SOC2 CC6.1 (Logical access): 2 open gaps (MFA, dormant users)."
+
+*Reasoning:* Auditors don't think in "MFA gap users." They think in control objectives. Mapping your findings to their framework makes audit prep a one-click export.
+
+**10. Show "coverage" — what percentage of your security surface is actually MONITORED.**
+You monitor: logins, grants, DDL, MFA, credentials, Trust Center. You don't monitor: network policies, IP allowlists, session policies, authentication policies, object tagging completeness. Show: "Security monitoring covers 7 of 12 possible domains (58%)."
+
+*Reasoning:* Knowing what you DON'T monitor is as important as what you DO. A blind spot acknowledged is safer than a blind spot assumed covered.
+
+---
+
+## SECURITY — Category C: Access & Exposure
+
+**11. The "Least privilege" section should generate REVOKE statements, not just analysis.**
+Line 983: shows role grants and 90-day access. But it doesn't help the DBA ACT. If a role hasn't been used in 90 days, generate: `REVOKE ROLE X FROM USER Y; -- unused since May 15`. One-click to copy/execute.
+
+*Reasoning:* Analysis without action is a report. Analysis with generated SQL is a tool. The DBA's time bottleneck is writing REVOKE statements, not knowing they're needed.
+
+**12. The "Exposure" section should show "last access date" per share consumer.**
+`exposure.py` classifies shares by consumer count. But it doesn't show WHEN each consumer last accessed the share. A share with 5 consumers where none have queried in 6 months is stale exposure — revoke it.
+
+*Reasoning:* Active shares are necessary. Inactive shares are forgotten attack surface. Last-access dates separate the two.
+
+**13. Add "lateral movement risk" — which roles can reach sensitive tables through role inheritance?**
+Current RBAC analysis is flat: "User X has roles A, B, C." But role B might inherit from role D, which has access to PII tables. Show the graph: "User X → Role B → Role D → TABLE.PII_DATA" with hop count.
+
+*Reasoning:* Direct grants are visible. Inherited grants through deep role hierarchies are the actual risk surface. Most privilege escalation in Snowflake happens through inheritance chains that nobody maps.
+
+**14. Add "client driver vulnerability" — flag connections using outdated/vulnerable driver versions.**
+You have client driver/version inventory (per FEATURES.md). Extend with: "JDBC 3.13.x has a known CVE; 4 users connected with it this week." Cross-reference driver versions against known vulnerabilities.
+
+*Reasoning:* An outdated driver is a network entry point. Flagging it on the Security page (where security decisions are made) is more actionable than burying it in a generic inventory.
+
+---
+
+## SECURITY — Category D: UX & Workflow
+
+**15. The "Decision queue" landing should be SORTED by risk, not by domain.**
+Line 993: opens with `render_security_overview` then governance. But findings from different domains (a CRITICAL change risk + a MEDIUM MFA gap) are separated by domain headers. Show a unified risk-ranked queue: worst item first, regardless of domain.
+
+*Reasoning:* A security operator triages by RISK, not by domain. The highest-risk item should be at the top of the page, whether it's an exposure, a login anomaly, or a governance gap.
+
+**16. Add a "Security SLA" — how quickly are findings acknowledged and remediated?**
+Alerts have delivery SLOs and precision scores. Security findings have no equivalent. Track: "Average time from finding-raised to finding-resolved: 4.2 days." Trend it.
+
+*Reasoning:* Without a response-time metric, security findings accumulate without urgency. An SLA creates the "this is overdue" pressure that drives action.
+
+**17. The quarterly access-review export should include a "recommended action" column.**
+FEATURES.md mentions "Quarterly access-review export pack." But exports are data dumps — the auditor still has to decide what to do. Add: "RECOMMEND: REVOKE (unused 90d)" or "RECOMMEND: REVIEW (elevated, active)" per row.
+
+*Reasoning:* An access review with recommendations completes in hours. One without recommendations takes days because each row requires judgment.
+
+---
+
+## ALERTS — Category E: Alert Quality & Precision
+
+**18. Show "alert precision rate" prominently on the Rules section.**
+You already track RESOLUTION_KIND (ACTIONED/NOISE/EXPECTED) per alert. Compute precision per rule: "COST_DAILY_CREDITS: 67% actioned, 22% noise, 11% expected." Surface this as a table alongside each rule.
+
+*Reasoning:* A rule with 80% noise needs its threshold tuned. A rule with 95% actioned is well-calibrated. Without precision visibility, operators can't distinguish good rules from bad ones.
+
+**19. Add "alert fatigue score" — how many alerts per day per operator, and what's the response rate?**
+If a DBA receives 20 alerts/day and only acknowledges 5, the fatigue score is concerning. Show: "Daily alert volume: 18. Ack rate: 32%. Response latency: 6.4 hours." This is the meta-metric that tells you whether alerting IS WORKING.
+
+*Reasoning:* An alert system that nobody responds to is worse than no alert system — it creates false confidence. Fatigue scoring surfaces the dysfunction before it becomes a missed incident.
+
+**20. The "threshold suggestions" feature should show the IMPACT of each suggested change.**
+Per FEATURES.md: "Threshold suggestions computed from resolution evidence (keeps ≥90% actioned)." But what's the blast radius? Show: "Raising threshold from 500 to 750 credits would have suppressed 4 events last month — all 4 were resolved as NOISE."
+
+*Reasoning:* A suggested threshold change is scary without impact analysis. Showing that the suppressed events were all noise gives confidence to accept the suggestion.
+
+**21. Add "alert correlation" — when multiple rules fire within the same hour, group them.**
+Individual alerts fire independently. But when COST_DAILY_CREDITS + COST_WH_DAILY_CREDITS + COST_ANOMALY_SWEEP all fire on the same warehouse at the same time, they're ONE incident described three ways. Show: "3 related alerts (common entity: WH_ALFA_TRANSFORM, ±15 min)."
+
+*Reasoning:* Alert storms from a single root cause are the #1 fatigue driver. Correlation reduces 10 alerts to 1 incident — which is what actually happened.
+
+---
+
+## ALERTS — Category F: Delivery & Reliability
+
+**22. Show delivery latency — time between alert-raised and alert-delivered.**
+You have `RAISED_AT` and delivery timestamps. Compute: "Median delivery latency: 12 minutes. p95: 47 minutes." If the scan runs hourly and delivery chains after it, the theoretical minimum is ~60 minutes. Show whether you're hitting that.
+
+*Reasoning:* A 2am critical alert delivered at 3:30am is a 90-minute detection-to-notification gap. If the scan runs at 2:00 and delivery at 2:05, the gap should be ~5 minutes. Measuring it exposes scheduling problems.
+
+**23. Add "delivery confirmation" — did the recipient actually SEE the alert?**
+`ALERT_DELIVERIES` tracks sending. But sending ≠ receiving. For Teams/Slack, the webhook returns 200 (accepted), not "read." Add an explicit "Acknowledged in app within X hours of delivery" metric as a proxy for "they saw it."
+
+*Reasoning:* Delivery SLOs measure the pipe. Response SLOs measure the human. Both need monitoring.
+
+**24. The "per-route failure" isolation is good — add "automatic route disable after N consecutive failures."**
+Lines 201-228 show route-level failure states. But a failing route keeps failing every cycle, filling APP_ERROR_LOG with noise. Auto-suspend after 5 consecutive failures and fire a PLATFORM alert: "Route X auto-disabled after 5 consecutive send failures."
+
+*Reasoning:* A broken webhook that retries every hour for weeks is wasted compute and log noise. Auto-disable with notification is the self-healing pattern.
+
+**25. Add a "delivery test" button — send a synthetic test event through each route.**
+The DBA sets up a webhook and hopes it works. Provide: "Send test event →" which pushes a synthetic `{severity: TEST, title: 'Delivery test from OVERWATCH'}` through the route and reports success/failure immediately.
+
+*Reasoning:* You should never have to wait for a real alert to discover your delivery is broken. A test button validates the pipe on demand.
+
+---
+
+## ALERTS — Category G: Alert Lifecycle & Workflow
+
+**26. The drawer should show "similar resolved events" — how was this handled last time?**
+Lines 457-462 show history for the rule. But the DBA wants to know: "How did we RESOLVE this last time?" Filter to only RESOLVED events with the same rule + entity, show the resolution note.
+
+*Reasoning:* Most alerts are recurring. Showing how the previous instance was resolved gives the operator a playbook based on actual experience, not generic guidance.
+
+**27. Add "auto-resolve" for alerts whose condition cleared.**
+The re-check button (line 431) verifies if the condition is still true. If it's not, the operator manually resolves. Automate: the next scan run should check if previously-raised conditions cleared and auto-resolve with "EXPECTED (condition cleared automatically)."
+
+*Reasoning:* An alert for "spend over threshold yesterday" that's no longer true today shouldn't require human action to close. Auto-clearing stale alerts reduces queue noise.
+
+**28. Bulk actions should support "resolve all NOISE for this rule."**
+Lines 113-148 support bulk ACK/RESOLVE. But the common pattern is: "This rule is too noisy — resolve all its open events as NOISE, then tune the threshold." Support rule-scoped bulk action, not just individually-selected events.
+
+*Reasoning:* A noisy rule might have 15 open events. Selecting all 15 individually is friction. "Resolve all for COST_DAILY_CREDITS as NOISE" is one action.
+
+**29. Add "snooze" as a lifecycle state between ACK and RESOLVE.**
+Sometimes an alert is acknowledged but can't be acted on until Monday (it's Friday night). There's no "come back to this in 48 hours" state. ACK means "I saw it." Snooze means "I'll handle it at a specific time." Add SNOOZE with a wake time.
+
+*Reasoning:* Without snooze, operators either leave alerts in ACK (and forget them) or resolve them prematurely (and lose tracking). Snooze with a wake time creates a "reminder" pattern.
+
+**30. The "storm view" toggle (line 351) should be the DEFAULT for >20 open events.**
+Currently it defaults to individual view. But if there are 50 open events, the individual table is overwhelming. Auto-engage storm view when count > 20; let users toggle to individual for drawer access.
+
+*Reasoning:* The storm view exists because individual view doesn't scale. Make the smart default: few events = individual (drawer access), many events = grouped (overview first).
+
+---
+
+## ALERTS — Category H: Intelligence & Insights
+
+**31. Add "alert-to-incident" conversion rate — what percentage of alerts become declared incidents?**
+You have incidents (V032) and alerts. Compute: "12% of alerts led to a declared incident. 88% were handled as standalone events." This measures whether alerting surfaces real problems.
+
+*Reasoning:* If 5% of alerts become incidents, your thresholds are too sensitive. If 50% do, your alerting is well-tuned. This meta-metric calibrates the system.
+
+**32. Show "time saved by automation" — how much faster are auto-resolved vs manually-resolved alerts?**
+If auto-resolve (via the scan clearing conditions) takes 1 hour and manual resolve takes 6 hours, you can quantify: "Automation saved 5 hours of operator time this month across 12 auto-resolved events."
+
+*Reasoning:* This is the ROI justification for the alert system's automation features. Leadership asks "what does this alerting investment get us?" — time saved is the answer.
+
+**33. The AI explain feature should generate a "root cause hypothesis confidence" score.**
+The Cortex-powered anomaly explanation generates natural language. But there's no confidence indicator: "This explanation accounts for 85% of the observed variance" vs "This is speculative (limited data)." Ground the explanation in measured data coverage.
+
+*Reasoning:* An AI explanation without confidence calibration is either trusted blindly or dismissed entirely. A confidence score teaches operators when to trust it.
+
+**34. Add "predicted next fire" for recurring alert rules.**
+If COST_DAILY_CREDITS fires every Thursday (batch day), predict: "Next expected fire: Thursday Aug 21 (based on 4-week pattern)." This turns a reactive alert into a predictable event that can be pre-handled.
+
+*Reasoning:* Alerts that fire on a schedule aren't surprises — they're planned work. Surfacing the pattern lets operators pre-assign or pre-suppress, reducing noise.
+
+---
+
+## CROSS-CUTTING — Category I: Integration Between Security & Alerts
+
+**35. Security findings should be able to generate alert RULES, not just display data.**
+A Security finding ("3 users without MFA") is currently a passive observation. It should offer: "Create alert rule: MFA_GAP > threshold → fire SECURITY/HIGH." One click generates the ALERT_CONFIG INSERT.
+
+*Reasoning:* Security posture findings that don't become monitored rules are one-time observations. Turning them into rules creates persistent governance — the system alerts when posture degrades again.
+
+**36. The Security "Exposure" inventory should fire alerts when a new LISTING share appears.**
+Shares are the data exposure surface. A new marketplace listing appearing should fire an alert: "NEW_LISTING_SHARE — a share was published to the marketplace; verify authorization." Currently this is visible only when someone opens the Exposure section.
+
+*Reasoning:* A new listing could be unauthorized data sharing. Passive visibility isn't enough; proactive alerting catches it in hours, not weeks.
+
+**37. Alert resolution notes should be searchable and linked to Security investigations.**
+When an alert is resolved with kind=ACTIONED and a note like "Disabled user JSMITH — compromised credential confirmed," that resolution is security-relevant evidence. Surface it on the Security page under the relevant user's Entity 360.
+
+*Reasoning:* Alert resolution notes are institutional memory. Currently they exist only in ALERT_AUDIT — not connected to the entity they describe. Cross-linking creates a complete investigation record.
+
+---
+
+## CROSS-CUTTING — Category J: Performance & Architecture
+
+**38. The Alerts page drawer makes 5+ reads per click — pre-fetch the common ones.**
+Lines 405-462: opening a drawer fetches rules, delivery status, history, re-check SQL, and remediation context. Each is a separate `run()`. Batch the first 3 (rules + delivery + history) into one `run_batch` since they're independent.
+
+*Reasoning:* A 2-second drawer open feels slow. Parallel batching could reduce it to <1 second. This is the most-interacted-with component on the page.
+
+**39. Security page at 1018 lines should be split like Cost was.**
+Similar to the Operations recommendation: 10 sections in one file is maintenance debt. Split into `security_parts/posture.py`, `security_parts/access.py`, `security_parts/exposure.py`, `security_parts/trust_center.py`.
+
+*Reasoning:* 1018 lines with 10 sections means merge conflicts, testing difficulty, and cognitive overload when making changes.
+
+**40. Both pages should share a "resolution workflow" component instead of implementing it separately.**
+Alerts has ACK/RESOLVE/lifecycle. Incidents have OPEN/MITIGATED/RESOLVED. Security findings will eventually need lifecycle too. Create a shared `lifecycle_controls(entity_type, entity_id, current_status, allowed_transitions)` component.
+
+*Reasoning:* Three separate lifecycle implementations means three places to fix bugs, three places to add audit logging, three places to update the UI. A shared component centralizes the pattern.
+
+---
+
+## Priority Matrix
+
+| Tier | Recommendations | Theme |
+|------|----------------|-------|
+| **Do First** (High impact, Low-Medium effort) | 1, 6, 15, 18, 19, 21, 22, 27, 28, 30 | Signal quality, workflow efficiency, triage speed |
+| **Second Pass** (High impact, Medium effort) | 2, 3, 5, 7, 11, 20, 25, 26, 33, 38 | Threat detection, delivery reliability, intelligence |
+| **Third Pass** (Medium impact, Medium-High effort) | 4, 8, 9, 10, 13, 16, 17, 23, 24, 29, 31, 32, 34, 35, 36, 37, 39, 40 | Compliance, architecture, advanced features |
+| **Highest single-item impact** | #21 (alert correlation) | Reduces alert fatigue more than any other single change |
+| **Lowest effort / highest ratio** | #27 (auto-resolve cleared conditions) | Eliminates stale alerts with zero human effort |
