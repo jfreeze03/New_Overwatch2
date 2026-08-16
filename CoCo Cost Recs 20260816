@@ -1,0 +1,105 @@
+20 Recommendations for Cost & Contract
+Category A: Decision Support (What executives actually need)
+1. Add a "So What?" summary sentence at the top of every section. Currently each section opens with data. There's no one-sentence verdict like "You're on pace to exhaust your contract 22 days early" or "3 warehouses account for 74% of your spend increase." The reader has to synthesize from tables. Add a programmatic headline computed from the data: bold, colored by severity, above everything else.
+
+Reasoning: A CIO opens this page for 30 seconds. Without a verdict sentence, they leave without an answer.
+
+2. Show "cost of inaction" prominently on the Optimization section. You have savings_rollup.py with de-duplicated addressable savings. But the headline "X/month addressable" isn't contextualized against the contract. Frame it as: "Unaddressed optimization opportunities will consume N additional days of your contract" or "X over the remaining term."
+
+Reasoning: Dollar amounts don't create urgency. "You'll run out 3 weeks earlier" does.
+
+3. Add a "What changed since last time I looked?" panel. There's no personalized delta. When a director opens Cost weekly, they want: "Since your last visit (Aug 9), warehouse spend increased $4,200 (+8%), driven by WH_ALFA_TRANSFORM_PRD. One new optimization opportunity was identified." Use APP_USAGE to know when they last visited.
+
+Reasoning: Returning users shouldn't re-read everything. Surface the delta.
+
+4. Contract & Forecast needs a "decision deadline" indicator. The renewal planner shows scenarios, but doesn't answer: "When do I need to commit by?" If your contract exhausts in 60 days, you need to start renewal negotiations now (they take 30-45 days). Show a "decision by" date, not just an exhaustion date.
+
+Reasoning: Procurement has lead times. The platform should encode that knowledge.
+
+Category B: Attribution Accuracy
+5. Show attribution confidence bands, not just point estimates. User/database spend is "share-allocated and says so" — good. But the number renders as exact (4,231.50) when it's really an estimate. Show a range: "3,800–$4,600 (allocated)" or at minimum render allocated numbers in italic/muted to visually distinguish from measured numbers.
+
+Reasoning: Finance will compare these to their own numbers. Overstating precision creates trust issues.
+
+6. Add a "cost coverage" gauge to Spend & Attribution. cost_coverage.py already knows which services can/cannot be drilled. Show a KPI: "87% of spend is attributable to specific workloads; 13% is indivisible platform cost (serverless, storage, etc.)." This manages expectations about what attribution CAN explain.
+
+Reasoning: Users ask "why don't the numbers add up?" when they sum warehouse attribution and compare to total spend. The gap is structural, not an error.
+
+7. Surface the app's own cost as a line item. V077 adds FACT_APP_COST_DAILY. The Brief shows ROI (savings vs app cost), but the Cost section doesn't show OVERWATCH's own spend as a visible line item alongside other workloads. It should — the tool should be transparent about its own overhead.
+
+Reasoning: Auditors ask "how much does this monitoring tool cost to run?" Show it.
+
+Category C: Optimization Workflow
+8. Rank optimization opportunities by effort, not just dollars. savings_rollup.py has confidence weights but no effort signal. An idle warehouse fix (one ALTER statement) should rank above a query rewrite ($500/month, 20 hours of engineering). Add an effort_tier (LOW=config change, MEDIUM=query tuning, HIGH=architecture change) and surface it.
+
+Reasoning: The highest-dollar opportunity isn't always the best next action. Quick wins build momentum.
+
+9. Show the verification track record. You have SAVINGS_LEDGER with ESTIMATED vs VERIFIED. Show the historical realization rate: "Of 12,000 in estimated savings, 8,400 (70%) was verified after implementation." This calibrates trust in new estimates.
+
+Reasoning: Without a track record, estimates are just opinions. With one, they're predictive.
+
+10. Add "experiment status" to optimization cards. V081 unified the experiment-verify flow. But the optimization panel still shows opportunities as static rows. Show which ones have active experiments running, which are pending verification, and which were rejected. Make the lifecycle visible.
+
+Reasoning: Prevents duplicate work ("I thought someone was already working on that warehouse").
+
+Category D: Contract Intelligence
+11. Show the blended rate trend, not just the current rate. If your effective /credit has drifted from 3.68 to $3.72 because serverless and AI credits bill at different rates, that's invisible today. Show a 6-month blended rate trend line.
+
+Reasoning: A rising blended rate means your workload mix is shifting toward more expensive services. That's a strategic signal.
+
+12. Model "what if we add workload X?" in the contract forecast. The renewal planner shows growth scenarios, but they're abstract percentage increases. Let the user input a concrete planned workload: "We're adding a new dbt pipeline on a Medium warehouse, 8h/day." Convert that to credits and overlay on the forecast.
+
+Reasoning: Executives approve projects that have cost projections. This tool should generate them.
+
+13. Show on-demand pricing exposure. If the contract exhausts, overrun credits bill at on-demand rates (typically 1.5-2x contract). Show: "At current burn, you'll exhaust your contract on Oct 14. Overrun through year-end at on-demand rates would cost an additional $X." The penalty framing drives action.
+
+Reasoning: "We'll exceed our contract" sounds manageable. "$X in penalty spend" sounds expensive.
+
+Category E: Performance & Usability
+14. The Spend & Attribution batch prefetch is good — extend it to Contract. _spend_attr_recent_jobs does parallel batch fetch for Spend+Attribution first paint. But Contract & Forecast still makes sequential reads (metering daily, settings, org billing). Apply the same pattern.
+
+Reasoning: Contract is the section executives visit most (it answers "are we on track?"). It should be the fastest, not just Spend.
+
+15. Collapse the "toggle for detail" pattern into progressive disclosure. Lines 124-146 use a toggle to hide Storage + Unmapped entities. The AI Users section uses another toggle. The Unit Costs section has a "full window" toggle. That's 3+ toggle-gated panels that a user must discover exist. Replace with a consistent "Show detail ▾" pattern with a count badge: "Show detail (3 items)" so users know there's content behind it.
+
+Reasoning: Toggles without content preview are invisible affordances. Users don't click what they don't know exists.
+
+16. The Unit costs _UNIT_COST_MAX_DAYS = 30 clamp is correct but confusing. The page window says "Last 90 days" but unit costs only scan 30 days, with a toggle to opt into the full window. This creates a "which number is right?" problem when someone compares unit cost trends to spend trends (different windows). Add an explicit visual indicator: a small pill badge on the section showing "30d" vs "90d" so the scope is never ambiguous.
+
+Reasoning: Mismatched windows between sections on the same page erode trust.
+
+Category F: Missing Capabilities
+17. Add a "cost per business outcome" view. You attribute cost to warehouses, users, databases, queries. But you don't connect cost to the REASON the spend exists. A warehouse running a revenue report costs 200/month. That report serves 3 executives. Cost per consumer: 67/month. Let leadership decide if that's acceptable.
+
+Reasoning: Cost without business context is just a number. Cost per outcome is a decision.
+
+18. Add storage economics: cost of retention vs cost of recreation. The storage panel shows what exists. It doesn't answer: "If I drop this 2TB table, can I recreate it from source if needed? How long would recreation take? Is 46/month in storage cheaper than X per re-creation?" This is the question that blocks every storage cleanup decision.
+
+Reasoning: Nobody drops tables because they're afraid of needing them later. Quantify the tradeoff.
+
+19. Show credit consumption velocity by hour-of-day and day-of-week. You have daily aggregates. But the pattern of WHEN spend happens matters: a warehouse burning credits at 3am with no active users is different from one burning at 10am during peak. Show a heatmap of credit consumption by hour×day with user activity overlay.
+
+Reasoning: Off-hours spend is the #1 source of idle waste. Making it visually obvious drives action.
+
+20. Add a "cost anomaly explanation" that's better than "anomaly detected." V076 gates anomalies on materiality. But when an anomaly IS significant, the user still has to investigate manually. Auto-correlate with: new queries in that warehouse (QUERY_HISTORY), config changes (WAREHOUSE_EVENTS_HISTORY), data volume changes (COPY_HISTORY). Surface the likely cause alongside the anomaly.
+
+Reasoning: You already have anomaly_explain.py and the grounded Cortex explanation in the alert sweep. Surface it on the Cost page too, not just in the alert drawer. The user investigating a cost spike shouldn't have to navigate to Alerts to see the explanation.
+
+Priority Matrix
+Rec	Impact	Effort	Do First?
+1 (verdict sentences)	High	Low	Yes
+2 (cost of inaction)	High	Low	Yes
+5 (confidence bands)	High	Low	Yes
+6 (coverage gauge)	High	Low	Yes
+20 (anomaly explain on Cost)	High	Low	Yes (exists elsewhere, just surface it)
+3 (what changed)	High	Medium	Yes
+8 (effort ranking)	Medium	Low	Yes
+9 (verification track record)	Medium	Low	Yes
+15 (progressive disclosure)	Medium	Low	Yes
+13 (on-demand exposure)	High	Medium	Second pass
+11 (blended rate trend)	Medium	Medium	Second pass
+4 (decision deadline)	High	Medium	Second pass
+19 (hour×day heatmap)	Medium	Medium	Second pass
+17 (cost per outcome)	High	High	Third pass
+12 (workload modeling)	High	High	Third pass
+18 (storage recreation)	Medium	High	Third pass
