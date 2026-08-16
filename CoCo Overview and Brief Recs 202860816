@@ -1,0 +1,109 @@
+20 Recommendations for Overview & Brief
+Category A: Information Hierarchy (What You See First)
+1. Brief needs a one-sentence verdict at the very top, before KPIs. The Brief opens with page_header then goes straight to KPI cards. There's no "Good morning — platform is healthy, spend on pace, no fires" or "Attention needed — 2 critical alerts, spend trending 18% over budget pace." A single bold prose sentence above the KPI row sets the emotional context for everything below.
+
+Reasoning: A reader's first 2 seconds determine whether they keep scrolling or close the tab. A computed verdict sentence answers "should I be worried?" before they parse any numbers.
+
+2. Overview's "Top Actions" should render ABOVE the spend chart, not below it. Currently the Overview render order is: KPIs → spend chart → forecast → platform score → actions. But the Design Review (rec 4, CONFIRMED) noted: "Hoist Top actions above Overview charts." Actions are what an executive needs to delegate. Charts are context. Context supports decisions; decisions are the headline.
+
+Reasoning: An executive opens Overview to answer "what needs my attention?" If they have to scroll past a 260px chart to find the answer, the page fails its stated purpose: "the work that needs an owner."
+
+3. The platform score should show its TREND, not just the current number. Line 77 computes the score from a fixed 24-48h window. But there's no "score was 85 yesterday, 72 today" context. The current number means nothing without direction. You already have FACT_PLATFORM_SCORE_DAILY — show a 7-day sparkline inside the score card.
+
+Reasoning: A score of 78 that was 92 yesterday is an emergency. A score of 78 that's been 75-80 all week is steady state. Without the trend, the number lacks urgency calibration.
+
+4. Brief's "Fires" section should show TIME since the oldest unacknowledged critical. The Brief shows a table of open criticals. But "CRITICAL alert raised 4 hours ago" and "CRITICAL alert raised 3 days ago" are wildly different situations. Add a KPI: "Oldest unack'd critical: 47h" — this creates MTTR pressure.
+
+Reasoning: The number of open alerts measures volume. The age of the oldest unacked alert measures responsiveness. Both matter; only volume is shown today.
+
+Category B: Signal Quality (What's Actually Useful)
+5. Overview's spend chart needs a "so what?" annotation. The charts.spend_trend line renders daily USD. But it doesn't annotate WHY a spike or dip happened. When a day is flagged as anomalous (from flag_anomalies), overlay a marker on the chart with a tooltip: "Anomaly: WH_ALFA_TRANSFORM_PRD +$800 (new dbt run)."
+
+Reasoning: A line chart without annotations is "look at this data." A line chart with annotations is "here's what happened." The anomaly detection exists server-side; surface it visually.
+
+6. The forecast backtest should show the engine's HISTORICAL ERROR RATE as a KPI. Lines mention backtest_forecasts — you already compute forecast-vs-actual. Surface it as: "Forecast accuracy: ±4.2% over last 3 months." This tells the reader how much to trust the month-end projection.
+
+Reasoning: A projected month-end of $42,000 means nothing if the forecast was off by 30% last month. Confidence in the projection is as important as the projection itself.
+
+7. Remove the "credits" sub-label from the MTD KPI when the dollar amount is shown. Brief line 133: "delta": f"{mtd_credits:,.0f} credits". Overview line 217: "sub": f"{format_credits(_mtd_credits)} cr". Showing both $12,400 AND 3,370 credits creates cognitive load. Executives think in dollars. Engineers think in credits. Pick one per audience (Brief=dollars only; Overview=both is okay).
+
+Reasoning: The Brief is "phone-friendly, one-scroll." Every piece of text that doesn't drive a decision is noise. Credits without context ("is 3,370 a lot?") is noise for an executive.
+
+8. Brief's sparkline should show the BUDGET LINE or PRIOR MONTH as a reference. Line 229: sparkline_row([("Spend, 14 days", ...)]). A sparkline without a reference line is just "went up and down." Add a dashed horizontal line at the daily budget pace (monthly budget ÷ days in month) so the reader immediately sees whether each day was over or under pace.
+
+Reasoning: A sparkline's job is to show a pattern at a glance. Without a reference, the only pattern visible is direction. With a budget line, the pattern becomes "how many days were over budget."
+
+Category C: Progressive Disclosure (What to Show vs What to Hide)
+9. The AI morning narrative should show a one-sentence teaser before the expander. Line 302: the digest is inside st.expander(..., expanded=False). A collapsed expander with no preview gives zero reason to click. Show the first sentence (or a Cortex-generated headline) outside the expander, then "Read full narrative ▾" for the rest.
+
+Reasoning: Expanders without visible benefit have near-zero click rates. A teaser sentence ("Platform healthy, but WH_TRANSFORM_PRD doubled — see narrative") drives engagement.
+
+10. Overview's "Cost drivers" panel should default to TOP 5, not the full table. The board panel renders all cost drivers. A 15-row table below the fold competes with the action queue for attention. Show the top 5 with "Show all N ▾" expansion.
+
+Reasoning: The executive question is "what's costing the most?" which is answered by the top 3-5 items. The full list is for investigation, not glancing.
+
+11. Overview shouldn't render the forecast section at all when there's <14 days of history. If _bt_hist has fewer than 14 complete days, the forecast is unreliable. Currently it renders with a "insufficient history" note. Better: hide the entire forecast section and show a setup-state chip: "Forecast available after 14 days of data."
+
+Reasoning: Showing an unreliable forecast with a disclaimer is worse than not showing one. It trains users to distrust the section.
+
+12. Brief's "Executive export" should be a single button, not three. Lines 325-347: three columns with HTML, slide bullets, and CSV export buttons. On a phone (the Brief's stated design target), three export buttons take a full screen width and push the timestamp below the fold. Make it one "Export ▾" dropdown.
+
+Reasoning: The Brief's contract is "one-scroll." Three export buttons (which 95% of users never touch) violate that contract. One collapsed button respects it.
+
+Category D: Freshness & Trust (Making the Data Believable)
+13. Show a "data freshness" chip on the Brief's KPI row, not a separate warning. Line 152: st.warning("Telemetry marts unreachable...") renders a full-width orange banner ABOVE the KPIs. This pushes the actual numbers below the fold. Instead, show the KPI row immediately with severity-colored values and a badge: "stale" or "live." Let the user see the numbers first, trust indicators inline.
+
+Reasoning: A full-width warning saying "data is stale" is the equivalent of "this page might be wrong." It destroys trust. A badge on specific numbers says "this one is delayed, but these others are fresh."
+
+14. Overview's result_caption calls should be replaced with inline source badges. The page has multiple result_caption(res) calls that render "Source: MART_EXEC_BOARD • 2.3s • 42 rows" below tables. This is developer metadata, not user information. Replace with a tiny inline badge (your existing .ow-src-badge) that shows mart or live — the full caption belongs in an Admin-only view.
+
+Reasoning: An executive doesn't care that the query took 2.3 seconds or returned 42 rows. They care whether the number is fresh. Badge the freshness; hide the plumbing.
+
+15. Add "as of" timestamps to the dollar KPIs. Brief shows MTD spend but doesn't say "as of which hour." Metering data lags up to 24h. If it's currently 3pm and the MTD figure is as-of midnight yesterday, that's a 15-hour gap. Show: "$12,400 MTD (thru Aug 15 23:00)" so the reader knows the recency.
+
+Reasoning: A CFO comparing your MTD to Snowsight's will get a different number because of latency. Labeling the timestamp prevents "your dashboard is wrong" conversations.
+
+Category E: Interactivity (Making it Actionable)
+16. Platform score drivers should be CLICKABLE → navigate to the relevant page. You already have _SCORE_DRIVER_NAV (line 60) mapping drivers to pages. But the driver list renders as a static table. Make each driver row a click target that navigates to the relevant section (e.g., "Critical alerts" → Alerts > Open events). The infrastructure (request_navigation) exists.
+
+Reasoning: A score says "what's wrong." A clickable driver says "what's wrong AND here's where to fix it." One step closer to closed-loop.
+
+17. Brief's action items should have a "Claim" button for operators. Lines 278-287 render ranked actions as markdown bullets. But there's no inline action. An operator reading the Brief at 7am should be able to click "Claim" next to an action, which assigns them as owner without navigating away. The workbench infrastructure (V074) supports this.
+
+Reasoning: The Brief is the surface an operator reads first. If acting on it requires navigating to another page, the Brief becomes read-only decoration rather than an operational tool.
+
+18. Overview's KPI cards should deep-link to the relevant detail page on click. The KPI row renders st.metric cards. They're not interactive. The "MTD credit spend" card should link to Cost & Contract > Spend. The "Open criticals" card should link to Alerts. The "Projected month-end" should link to Contract & Forecast.
+
+Reasoning: KPIs are summary → detail entry points. Without links, users have to manually navigate to the detail. Every extra click is a decision point where they might give up.
+
+Category F: Missing Capabilities
+19. Add a "compared to last week at this time" context to the Brief. The Brief shows MTD and a sparkline. It doesn't answer: "Is today's spend normal for a Tuesday?" Show a comparison: "Today so far: 1,200 (vs 1,050 same day last week, +14%)." This uses the fact data you already have.
+
+Reasoning: Day-of-week patterns are the #1 context for "is this normal?" An anomaly detection system knows this; the Brief should too.
+
+20. Add a "Contract countdown" as a persistent element on both pages. You compute contract exhaustion (Brief line 154, overview implied). But it only shows as a conditional KPI card when a budget is configured. Make it a persistent, always-visible element: a thin progress bar below the page header showing "67% of contract consumed | 93 days remaining." Color it green/amber/red based on pacing.
+
+Reasoning: The single most important number in a committed-spend contract is "how much runway is left." It should be visible on EVERY page visit without looking for it. A progress bar is instantly parseable — faster than reading a date or a number.
+
+Priority Matrix
+Rec	Impact	Effort	Do First?
+1 (verdict sentence)	High	Low	Yes
+2 (actions above chart)	High	Low	Yes
+4 (oldest unacked critical age)	High	Low	Yes
+8 (sparkline with budget reference)	High	Low	Yes
+13 (inline freshness badge vs full-width warning)	High	Low	Yes
+16 (clickable score drivers)	High	Low	Yes
+3 (score trend sparkline)	High	Medium	Yes
+20 (persistent contract countdown)	High	Medium	Yes
+5 (chart anomaly annotations)	High	Medium	Second pass
+9 (AI narrative teaser)	Medium	Low	Second pass
+14 (result_caption → badges)	Medium	Low	Second pass
+15 (as-of timestamps)	Medium	Low	Second pass
+6 (forecast accuracy KPI)	Medium	Medium	Second pass
+10 (top 5 cost drivers default)	Medium	Low	Second pass
+18 (KPI card deep links)	Medium	Medium	Second pass
+19 (same-day-last-week comparison)	Medium	Medium	Third pass
+7 (remove credits sub-label from Brief)	Low	Low	When touching Brief
+11 (hide forecast with <14d history)	Low	Low	When touching forecast
+12 (single export button)	Low	Low	When touching Brief
+17 (claim button on Brief actions)	Medium	High	Third pass
