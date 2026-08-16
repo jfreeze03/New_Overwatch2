@@ -1,0 +1,252 @@
+I now have comprehensive understanding of the Decision Studio (page shell: 64 lines, section bodies: 550 lines, logic: 154 lines, workbench logic: 450 lines, workbench SQL: 634 lines). It has 6 sections: Portfolio, SLOs, Products, Cost Truth, Scenarios, Experiments. Here are 40 recommendations.
+
+---
+
+# 40 Recommendations for Decision Studio
+
+## Category A: Portfolio Prioritization (Where the Value Lives)
+
+**1. The portfolio LANE (ACT NOW / PLAN / VALIDATE) should show estimated value PER lane as a KPI.**
+Currently the portfolio table sorts by lane. But there's no "ACT NOW lane total: $4,200/month" vs "PLAN lane total: $12,000/month" headline. Lane value headlines tell a director: "We have $4,200 in ready-to-act optimization. We need to VALIDATE $12,000 more before we can act."
+
+*Reasoning:* A prioritized list without aggregated dollar value per tier doesn't answer "how much is on the table?" at each stage of readiness.
+
+**2. Add a "portfolio coverage" metric — what percentage of total spend is represented in the portfolio?**
+The portfolio shows individual query families. But what fraction of your total warehouse spend do these families explain? Show: "Portfolio covers 73% of measured credits. 27% is below the cap or unattributed." This sets expectations about completeness.
+
+*Reasoning:* A portfolio that covers 40% of spend means 60% of cost is invisible to the decision-maker. That's a confidence issue. Surfacing the gap drives effort toward attribution completeness.
+
+**3. The "NEXT_MOVE" recommendation needs a CONFIDENCE indicator per recommendation.**
+Line 73-82 (decision.py): `NEXT_MOVE` is assigned categorically ("Cache or materialize", "Stabilize failures", etc.). But there's no strength-of-evidence signal. A "Cache this" recommendation based on 10,000 runs with 2% cache rate is strong. The same recommendation based on 50 runs is speculative. Show confidence per recommendation.
+
+*Reasoning:* The decision-maker needs to know "should I trust this suggestion?" A recommendation without confidence is an opinion. A recommendation with confidence is evidence-backed guidance.
+
+**4. Add "dependency impact" — if I optimize family X, what downstream queries benefit?**
+A query family that feeds 10 downstream tables has higher priority than one that feeds none, even at the same cost. Cross-reference query families against their table write targets and the downstream read families.
+
+*Reasoning:* Optimization has positive externalities. A slow staging query that blocks 50 downstream consumers creates more total wait than its own $/run suggests. Impact should propagate through the graph.
+
+**5. The portfolio should show "trend" per family — is this workload growing or shrinking?**
+Lines 22-88: compute impact, confidence, blast radius. But there's no DIRECTION signal. A family costing $200/month and growing at 15%/month becomes $600/month in a year. One at $300/month but shrinking will self-resolve. Show a growth flag.
+
+*Reasoning:* Static prioritization misses trajectory. Growing workloads compound; shrinking ones self-resolve. Priority should weight growth positively.
+
+---
+
+## Category B: SLO Management (From Objectives to Accountability)
+
+**6. SLOs should have an OWNER assigned per objective — not just entity-level ownership.**
+The SLO cockpit shows objectives (WAREHOUSE_SUCCESS_PCT, TASK_P95_SEC, etc.) and their breach status. But who is ACCOUNTABLE for fixing a breach? Add an owner field. When a breach occurs, the system knows who to alert.
+
+*Reasoning:* An SLO without an owner is a metric. An SLO with an owner is an accountability contract. The latter drives action; the former drives dashboards.
+
+**7. Show "error budget remaining" for each SLO, not just MET/BREACH.**
+A binary MET/BREACH hides HOW CLOSE you are to breaching. "Success rate SLO: 99.5% target, currently 99.7% — 0.2% budget remaining" tells you "one more bad day and we breach." That's more actionable than "MET."
+
+*Reasoning:* Error budgets are the industry standard for SLO management (Google SRE). They turn a binary state into a continuous signal that enables preemptive action before a breach occurs.
+
+**8. Add "SLO burn rate" — at the current rate of error consumption, when will the budget exhaust?**
+If error budget is consumed at 2x the sustainable rate, you'll breach in 15 days. Show: "Budget exhaustion: ~15 days at current burn." This is the SRE burn alert pattern.
+
+*Reasoning:* `slo_summary` returns `worst_burn` but it's not prominently displayed as a countdown. A "days until breach" forecast creates urgency proportional to proximity.
+
+**9. SLO history should show a trend chart — budget consumption over time.**
+The cockpit shows current state. There's no "last 30 days of this SLO's performance" visualization. A line chart of daily SLO attainment with the target as a reference line shows whether you're improving or degrading.
+
+*Reasoning:* A point-in-time snapshot tells you "where am I?" A trend tells you "where am I going?" Without the trend, you can't distinguish a stable SLO from one approaching breach.
+
+**10. Allow SLO objectives to trigger alert rules automatically.**
+Currently SLOs and alerts are separate systems. An SLO breach should optionally fire an alert through the existing scan engine: "SLO_BREACH — WAREHOUSE_P95_SEC > 5s for WH_ALFA_QUERY." One-click from the SLO definition to create the corresponding rule.
+
+*Reasoning:* SLOs without automated alerting on breach are audit artifacts, not operational tools. The alert infrastructure exists; connecting it makes SLOs proactive.
+
+---
+
+## Category C: Product Economics (From Cost to Business Value)
+
+**11. Show "cost per user served" for each data product.**
+Line 261-296: product economics shows costs. But cost without consumption context is meaningless. A $500/month data product serving 50 users costs $10/user/month. One serving 2 users costs $250/user/month. The latter is the one to question.
+
+*Reasoning:* Absolute cost doesn't justify elimination. Cost per consumer does. A $2,000/month product serving the entire executive team is cheap per capita. A $200/month product nobody reads is waste.
+
+**12. Add "data product SLA" — does this product meet its freshness/availability contract?**
+Products have cost, but no service level. If a "Daily Revenue Report" product has a $300/month cost but delivered late 4 times this month, its cost/quality ratio is terrible. Cross-reference product cost against pipeline SLA data.
+
+*Reasoning:* A cheap product that's unreliable wastes the cost of everyone who waits for it or works around it. Quality × cost = total cost of ownership.
+
+**13. Show "product trend" — is this product's cost growing or shrinking?**
+Month-over-month cost trend per product. A product whose cost doubled in 3 months needs attention regardless of its absolute level. One that's stable at a high level may be correctly sized.
+
+*Reasoning:* Same as portfolio trend reasoning — static views miss trajectory. Product owners need to know whether their product is becoming more expensive over time.
+
+**14. Add "product retirement candidates" — products with declining usage AND high cost.**
+Cross-reference product cost against access history (last N days of reads). A product with $400/month cost but only 2 queries in 30 days is a retirement candidate. Flag it.
+
+*Reasoning:* Nobody actively decides to keep paying for unused data products. They just don't decide to stop. Surfacing the question forces the decision.
+
+**15. Link products to their upstream pipelines and downstream consumers.**
+A data product exists in a graph: pipelines feed it, consumers read it. Show both. "This product is fed by pipeline X (cost: $100/month) and consumed by 3 dashboards and 12 ad-hoc users."
+
+*Reasoning:* Product economics viewed in isolation miss the full cost (including the pipeline that feeds them) and the full value (including all consumers, not just direct queries).
+
+---
+
+## Category D: Cost Truth (From Numbers to Confidence)
+
+**16. Cost Truth should show the "reconciliation gap" prominently — where the numbers DON'T add up.**
+Lines 319-351: shows billed vs attributed. But the GAP between them is the most interesting number. If billed = $40,000 and attributed = $34,000, where's the $6,000? Show: "Unattributed: $6,000 (15%) — serverless $3,200, storage $1,800, other $1,000."
+
+*Reasoning:* Finance will compare your numbers to the invoice. The gap is always non-zero (because some services can't be drilled). Making it explicit and explained prevents "your dashboard is wrong" conversations.
+
+**17. Add "confidence level" per cost-truth source — is this measured, estimated, or modeled?**
+Not all numbers in the cost truth are equally trustworthy. Warehouse credits are MEASURED (exact). User attribution is ALLOCATED (estimate). Storage is INVOICED (different lag). Show a confidence column per line.
+
+*Reasoning:* Mixing measured and estimated numbers without labeling creates false precision. An executive comparing "warehouse: $30,000 (measured)" to "user X: $5,000 (allocated)" needs to know the latter has a wider error bar.
+
+**18. Show "cost truth drift over time" — is the reconciliation gap improving or worsening?**
+If the unattributed gap was 10% last month and 15% this month, attribution coverage is degrading (new workloads not instrumented, new services appearing). Track and trend it.
+
+*Reasoning:* A growing gap means the system is losing visibility. That's a canary signal for "something new is running and we don't know what it costs."
+
+---
+
+## Category E: Scenarios & Projections (From Estimates to Commitments)
+
+**19. The scenario projection needs a "historical accuracy" context.**
+`scenario_projection` applies adoption × realization haircuts. But how accurate have past projections been? Show: "Last quarter's scenario projected $8,000 capture; actual verified: $5,600 (70% realization)." This calibrates current projections.
+
+*Reasoning:* A projection without a track record is guesswork. A projection with historical accuracy is a planning tool. The savings ledger has the verification data — use it to score past projections.
+
+**20. Scenarios should support "portfolio scenarios" — what if we fund ALL items in the ACT NOW lane?**
+Currently `scenario_projection` takes all open actions. But the interesting question is: "If we commit engineering time to JUST the ACT NOW lane, what's the expected capture?" Allow scenario scoping by lane.
+
+*Reasoning:* A director approving resources needs: "If I give 2 engineers to the ACT NOW items for a month, we expect to capture $X." That's a fundable proposal with a projected return.
+
+**21. Add "effort estimation" to scenarios — not just dollars saved, but hours required.**
+`EFFORT_PROXY` (LOW/MEDIUM/HIGH) exists but it's categorical. Convert to a rough hour estimate: LOW=2h, MEDIUM=8h, HIGH=40h. Then show: "ACT NOW lane: estimated 24 hours of engineering → $4,200/month savings = $175/hour ROI."
+
+*Reasoning:* Dollar savings without effort context doesn't let leadership make trade-off decisions. "$4,200/month savings for 24 hours of work" is a clear yes. "$4,200/month for 400 hours" is a clear no.
+
+**22. Show a "scenario timeline" — when will savings materialize?**
+Not all savings are instant. An auto-suspend fix (LOW effort) saves immediately. A query rewrite (HIGH effort) saves after implementation + deployment + verification. Show projected savings by month: "Month 1: $1,200 (quick wins), Month 2: $2,800 (+ medium items), Month 3: $4,200 (all items)."
+
+*Reasoning:* A CFO budgeting for next quarter needs to know WHEN the savings start flowing, not just the total. A phased projection enables calendar-aware planning.
+
+**23. Allow "what-if: if we do nothing" scenario.**
+The inverse scenario: "If no optimization is done and workloads grow at their current trajectory, next quarter's spend is projected at $X — $Y higher than today." This is the "cost of inaction" from the Cost page recommendation, surfaced here as a scenario input.
+
+*Reasoning:* The alternative to optimization isn't "stay the same" — it's "grow at the current rate." Making the baseline explicit shows that "doing nothing" has a cost.
+
+---
+
+## Category F: Experiments (From Planning to Verification)
+
+**24. Show experiment DURATION alongside status.**
+Lines 485-545: experiments table shows status. But there's no "how long has this experiment been running?" An experiment in RUNNING status for 45 days probably needs to be forced to a decision. Show: "RUNNING (38 days)" to create completion pressure.
+
+*Reasoning:* Without duration, experiments linger. "RUNNING" for 3 days is fine. "RUNNING" for 2 months is a decision someone is avoiding. Duration makes the avoidance visible.
+
+**25. Add "experiment health" — is the metric actually changing during the experiment?**
+An experiment on auto-suspend expects idle credits to decrease. But is that ACTUALLY happening during the experiment window? Show a before/after trend of the target metric. "Expected: idle credits ↓. Observed: idle credits ↓23%. Experiment appears effective."
+
+*Reasoning:* An experiment without intermediate measurement is just a wait-and-see. Early measurement lets operators terminate failed experiments early (saving time) or confirm successful ones fast.
+
+**26. Auto-suggest experiment VERIFICATION when the observation window expires.**
+If an experiment was created with an expected duration (implicitly: the "observation" status exists for this reason), auto-prompt when enough time passes: "Experiment X has been observing for 14 days. Ready to verify? [Verify now]."
+
+*Reasoning:* Experiments that don't get verified become stale data. A nudge at the right time completes the loop.
+
+**27. Link experiments to their source ACTION — and show the action's current state.**
+V081 unified experiment-verify with action-close. But the UI should make this visible: "This experiment came from action #47 (Tighten auto-suspend on WH_ALFA_QUERY). Action status: IN_PROGRESS. On verification, the action will auto-close."
+
+*Reasoning:* The experiment exists because of an action. Showing the connection helps the operator understand the full workflow state without navigating between pages.
+
+**28. Show "experiment portfolio" statistics — how many experiments are in each status?**
+A KPI row at the top of the Experiments section: "Planned: 3 | Running: 2 | Observing: 1 | Verified: 8 | Rejected: 2 | Rolled back: 1." This is the meta-view of optimization throughput.
+
+*Reasoning:* Without aggregate statistics, the operator doesn't know if the experiment pipeline is flowing or stuck. Low "Verified" count relative to "Running" means decisions aren't being made.
+
+---
+
+## Category G: Cross-Section Integration
+
+**29. Portfolio items should link to Entity 360 (on Control Room) for investigation.**
+When a portfolio item says "ACT NOW: Cache or materialize QUERY_FINGERPRINT abc123," clicking it should open the Entity 360 view for that fingerprint, showing all related context (cost history, execution patterns, related alerts).
+
+*Reasoning:* The decision to act requires investigation. The investigation tool (Entity 360) exists on another page. A deep link completes the flow: prioritize → investigate → decide → act.
+
+**30. SLO breaches should create ACTIONS automatically.**
+When an SLO breaches, it should auto-create an ACTION_QUEUE item: "Investigate SLO breach: WAREHOUSE_P95_SEC > 5s on WH_ALFA_QUERY. Source: SLO objective #7." This connects the objective system to the action system.
+
+*Reasoning:* SLOs that breach without creating work items are unaccountable. Auto-creating actions ensures every breach has an owner and a tracking artifact.
+
+**31. The Scenarios section should pull VERIFIED savings from the Cost > Savings ledger and show ROI.**
+The Scenarios section projects future savings. But it doesn't show: "To date, Decision Studio recommendations have been implemented and verified at $X/quarter." This is the tool's own ROI.
+
+*Reasoning:* If you can't prove the tool's recommendations generated real value, the tool is just a planning toy. Verified savings from past recommendations ARE the proof.
+
+**32. Cost Truth should have a "drill into the gap" action — jump to the specific unattributed service.**
+When Cost Truth shows "$3,200 unattributed in serverless," there should be a link to: "See serverless detail on Cost & Contract > Spend & Attribution" — a one-click cross-page navigation to investigate.
+
+*Reasoning:* Identifying a gap without a path to investigate it creates frustration. "Here's the gap; click here to understand it" completes the analytical flow.
+
+---
+
+## Category H: Intelligence & Automation
+
+**33. Add Cortex-powered "decision recommendations" based on the full portfolio context.**
+Feed the top-10 portfolio items, their costs, SLO status, and experiment history into Cortex. Ask: "Given this portfolio, SLOs, and past experiment outcomes, recommend the top 3 actions for next week." Surface as an AI narrative.
+
+*Reasoning:* An AI synthesis across portfolio + SLOs + experiments can spot patterns a human scanning 6 sections won't: "You've verified 3 auto-suspend fixes this quarter with 85% realization — the remaining 4 warehouses with the same pattern are high-confidence quick wins."
+
+**34. Auto-detect "stale planning" — items that haven't moved in 30+ days.**
+Open actions, planned experiments, and ACT NOW items that haven't transitioned in 30 days are stale planning. Show: "5 items haven't moved in 30+ days. Stale work hides real priorities."
+
+*Reasoning:* Planning tools accumulate items that nobody acts on. Surfacing staleness creates a "close it or do it" pressure that keeps the queue honest.
+
+**35. Add "pattern matching" — suggest actions based on successful past remediations.**
+If 4 warehouses have been successfully optimized via auto-suspend tightening (VERIFIED in experiments), and 3 more have the same idle profile, auto-suggest: "3 warehouses match the profile of successfully-optimized warehouses. Suggested action: same fix."
+
+*Reasoning:* Past success patterns should inform future prioritization. The data exists in SAVINGS_LEDGER + OPTIMIZATION_EXPERIMENTS. Cross-referencing it creates evidence-based suggestions.
+
+---
+
+## Category I: User Experience & Usability
+
+**36. The 6-section layout ("Portfolio, SLOs, Products, Cost Truth, Scenarios, Experiments") needs a visual flow indicator.**
+These sections represent a workflow: Understand (Portfolio, Cost Truth) → Plan (Products, Scenarios) → Execute (Experiments) → Verify (back to Portfolio). But the section nav is flat pills with no flow indication. Add a numbered sequence or progress indicator.
+
+*Reasoning:* A workflow without visual sequence looks like 6 random panels. A numbered flow says "start here, end there" and teaches the user the intended path.
+
+**37. Add a "planning summary" that synthesizes across all 6 sections into one view.**
+After visiting all sections, the user has to mentally combine: portfolio priorities + SLO status + product economics + cost truth + scenario projections + experiment status. Provide a one-screen "Decision Summary" that pulls the headline KPI from each section.
+
+*Reasoning:* A director reviewing the Decision Studio for a weekly planning meeting wants: "Here's where we are across all dimensions" in one glance. Currently they must click through 6 sections to assemble that picture.
+
+**38. Add "saved scenarios" — let users name and compare scenario configurations.**
+`scenario_projection` takes adoption% and realization% as inputs. But there's no way to save: "Aggressive (80% adoption, 60% realization) vs Conservative (40% adoption, 40% realization)" and compare them side by side.
+
+*Reasoning:* Planning involves comparing alternatives. Without saved scenarios, the user has to remember slider positions and mentally compare. Saving them enables rigorous comparison.
+
+**39. The experiment "Save" button should show a PREVIEW of what will happen.**
+Line 541: "Save experiment" executes immediately. But the user should see: "Saving this as VERIFIED will: (1) book $400 to SAVINGS_LEDGER, (2) close ACTION #47, (3) mark experiment terminal." Make the cascade visible before execution.
+
+*Reasoning:* V081 unified experiment-verify into an atomic transaction. The user should understand all the side effects of that transaction BEFORE clicking. Surprises after the click erode trust.
+
+**40. Add "Decision Studio ROI dashboard" — track the studio's own contribution to savings.**
+Across the entire page, show one persistent KPI: "Decision Studio recommendations verified this quarter: $X. Actions created: N. Average time-to-verify: Y days." This is the page's own performance metric.
+
+*Reasoning:* A planning tool that can't demonstrate its own value will eventually be deprioritized. Self-measurement is self-justification. If the Decision Studio contributes $20,000/quarter in verified savings, it earns its existence.
+
+---
+
+## Priority Matrix
+
+| Tier | Recommendations | Theme |
+|------|----------------|-------|
+| **Do First** (High impact, Low effort) | 1, 2, 6, 7, 16, 24, 28, 34 | Value headlines, ownership, duration visibility |
+| **Second Pass** (High impact, Medium effort) | 3, 5, 8, 9, 11, 17, 19, 20, 21, 27, 29, 30, 37, 40 | Intelligence, cross-linking, projections |
+| **Third Pass** (High impact, High effort) | 4, 10, 12, 15, 22, 25, 33, 35, 36 | Graph analysis, AI synthesis, workflow |
+| **Polish** (Medium impact, Low-Medium effort) | 13, 14, 18, 23, 26, 31, 32, 38, 39 | Trends, automation, UX refinements |
+| **Highest single-item impact** | #40 (Self-ROI dashboard) | If the studio proves its own value, it justifies all other investments |
+| **Best effort/impact ratio** | #1 (Lane value KPIs) + #28 (Experiment portfolio stats) | Two KPI rows that transform comprehension with zero data work |
