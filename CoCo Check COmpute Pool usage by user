@@ -1,0 +1,149 @@
+-- Profile RStudio memory and credit usage to right-size compute pool instance family
+-- Co-authored with CoCo
+
+-- ============================================================
+-- SECTION 1: Memory usage profile (past 30 days)
+-- ============================================================
+WITH parsed_logs AS (
+  SELECT 
+    TIMESTAMP,
+    PARSE_JSON(VALUE):message::STRING AS message,
+    REGEXP_SUBSTR(PARSE_JSON(VALUE):message::STRING, 'mem: ([0-9.]+)%', 1, 1, 'e') AS mem_pct,
+    REGEXP_SUBSTR(PARSE_JSON(VALUE):message::STRING, 'cpu: ([0-9.]+)%', 1, 1, 'e') AS cpu_pct,
+    REGEXP_SUBSTR(PARSE_JSON(VALUE):message::STRING, 'sessions: ([0-9]+)', 1, 1, 'e') AS sessions
+  FROM SNOWFLAKE.TELEMETRY.EVENTS
+  WHERE TIMESTAMP >= DATEADD('day', -30, CURRENT_TIMESTAMP())
+    AND RESOURCE_ATTRIBUTES:"snow.compute_pool.name"::STRING = 'POSIT_TEAM_NATIVE_APP_WORKBENCH'
+    AND RECORD_TYPE = 'LOG'
+    AND VALUE::STRING ILIKE '%health-check%mem:%'
+)
+SELECT 
+  DATE_TRUNC('day', TIMESTAMP) AS day,
+  COUNT(*) AS samples,
+  ROUND(AVG(mem_pct::FLOAT), 1) AS avg_mem_pct,
+  ROUND(MAX(mem_pct::FLOAT), 1) AS max_mem_pct,
+  ROUND(MIN(mem_pct::FLOAT), 1) AS min_mem_pct,
+  ROUND(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY mem_pct::FLOAT), 1) AS p95_mem_pct,
+  ROUND(PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY mem_pct::FLOAT), 1) AS p99_mem_pct,
+  ROUND(AVG(cpu_pct::FLOAT), 1) AS avg_cpu_pct,
+  ROUND(MAX(cpu_pct::FLOAT), 1) AS max_cpu_pct,
+  MAX(sessions::INT) AS max_sessions
+FROM parsed_logs
+WHERE mem_pct IS NOT NULL
+GROUP BY 1
+ORDER BY 1 DESC;
+
+-- ============================================================
+-- SECTION 2: Credit cost projection across instance families
+-- ============================================================
+-- Measured rates:
+--   CPU_X64_XS  (6 GiB):  ~0.06 credits/hour (baseline, measured Jul 18 - Aug 11)
+--   CPU_X64_SL (58 GiB): ~0.41 credits/hour (current, measured Aug 13-17)
+--
+-- Ratio: SL is ~6.8x the cost of XS.
+-- Using this ratio pattern to project larger instances:
+
+SELECT 
+  instance_family,
+  memory_gib,
+  vcpus,
+  measured_credits_per_hour,
+  ROUND(measured_credits_per_hour * 24, 2) AS daily_credits,
+  ROUND(measured_credits_per_hour * 24 * 30, 2) AS monthly_credits_30d,
+  ROUND((measured_credits_per_hour - 0.41) * 24 * 30, 2) AS monthly_delta_vs_current
+FROM (
+  -- Current instance (measured)
+  SELECT 'CPU_X64_SL'  AS instance_family, 58 AS memory_gib, 14 AS vcpus, 0.41 AS measured_credits_per_hour
+  UNION ALL
+  -- Projected instances (scaled by memory/vCPU ratio from Snowflake consumption table)
+  SELECT 'HIGHMEM_X64_M', 240, 28, 0.41 * (240.0/58)   -- ~4.1x memory => ~4.1x cost
+  UNION ALL
+  SELECT 'MEM_X64_G2_64', 492, 60, 0.41 * (492.0/58)   -- ~8.5x memory => ~8.5x cost
+  UNION ALL
+  SELECT 'MEM_X64_G2_192', 1436, 188, 0.41 * (1436.0/58) -- ~24.8x memory
+  UNION ALL
+  SELECT 'HIGHMEM_X64_L', 984, 124, 0.41 * (984.0/58)  -- ~17x memory
+  UNION ALL
+  SELECT 'CPU_X64_M', 28, 6, 0.41 * (28.0/58)          -- smaller, cost savings
+) projections
+ORDER BY memory_gib;
+
+-- ============================================================
+-- SECTION 3: Actual credit spend on current SL since upgrade
+-- ============================================================
+SELECT 
+  DATE_TRUNC('day', START_TIME) AS usage_date,
+  COUNT(*) AS hours_active,
+  ROUND(SUM(CREDITS_USED), 2) AS daily_credits,
+  ROUND(AVG(CREDITS_USED), 4) AS avg_credits_per_hour,
+  ROUND(SUM(CREDITS_USED) * 30, 2) AS projected_monthly_at_this_rate
+FROM SNOWFLAKE.ACCOUNT_USAGE.SNOWPARK_CONTAINER_SERVICES_HISTORY
+WHERE COMPUTE_POOL_NAME = 'POSIT_TEAM_NATIVE_APP_WORKBENCH'
+  AND START_TIME >= '2026-08-13'
+GROUP BY 1
+ORDER BY 1 DESC;
+
+-- ============================================================
+-- SECTION 4: Per-user activity breakdown (past 30 days)
+-- ============================================================
+WITH user_activity AS (
+  SELECT 
+    TIMESTAMP,
+    REGEXP_SUBSTR(VALUE::STRING, '\\(([A-Z0-9]+):', 1, 1, 'e') AS user_id
+  FROM SNOWFLAKE.TELEMETRY.EVENTS
+  WHERE TIMESTAMP >= DATEADD('day', -30, CURRENT_TIMESTAMP())
+    AND RESOURCE_ATTRIBUTES:"snow.compute_pool.name"::STRING = 'POSIT_TEAM_NATIVE_APP_WORKBENCH'
+    AND RECORD_TYPE = 'LOG'
+    AND VALUE::STRING ILIKE '%slow uri%'
+)
+SELECT 
+  user_id,
+  COUNT(*) AS total_requests,
+  MIN(TIMESTAMP) AS first_seen,
+  MAX(TIMESTAMP) AS last_seen,
+  COUNT(DISTINCT DATE_TRUNC('day', TIMESTAMP)) AS active_days,
+  COUNT(DISTINCT DATE_TRUNC('hour', TIMESTAMP)) AS active_hours
+FROM user_activity
+WHERE user_id IS NOT NULL
+GROUP BY user_id
+ORDER BY active_hours DESC;
+
+-- ============================================================
+-- SECTION 5: Per-user resource impact (memory/CPU spike correlation)
+-- ============================================================
+WITH health_checks AS (
+  SELECT 
+    DATE_TRUNC('hour', TIMESTAMP) AS hour,
+    MAX(REGEXP_SUBSTR(VALUE::STRING, 'mem: ([0-9.]+)%', 1, 1, 'e')::FLOAT) AS max_mem_pct,
+    MAX(REGEXP_SUBSTR(VALUE::STRING, 'cpu: ([0-9.]+)%', 1, 1, 'e')::FLOAT) AS max_cpu_pct
+  FROM SNOWFLAKE.TELEMETRY.EVENTS
+  WHERE TIMESTAMP >= DATEADD('day', -30, CURRENT_TIMESTAMP())
+    AND RESOURCE_ATTRIBUTES:"snow.compute_pool.name"::STRING = 'POSIT_TEAM_NATIVE_APP_WORKBENCH'
+    AND RECORD_TYPE = 'LOG'
+    AND VALUE::STRING ILIKE '%health-check%mem:%'
+  GROUP BY 1
+),
+user_hours AS (
+  SELECT DISTINCT
+    DATE_TRUNC('hour', TIMESTAMP) AS hour,
+    REGEXP_SUBSTR(VALUE::STRING, '\\(([A-Z0-9]+):', 1, 1, 'e') AS user_id
+  FROM SNOWFLAKE.TELEMETRY.EVENTS
+  WHERE TIMESTAMP >= DATEADD('day', -30, CURRENT_TIMESTAMP())
+    AND RESOURCE_ATTRIBUTES:"snow.compute_pool.name"::STRING = 'POSIT_TEAM_NATIVE_APP_WORKBENCH'
+    AND RECORD_TYPE = 'LOG'
+    AND VALUE::STRING ILIKE '%slow uri%'
+)
+SELECT 
+  uh.user_id,
+  COUNT(DISTINCT uh.hour) AS hours_present,
+  COUNT(DISTINCT CASE WHEN hc.max_mem_pct >= 70 THEN uh.hour END) AS hours_high_mem,
+  COUNT(DISTINCT CASE WHEN hc.max_cpu_pct >= 80 THEN uh.hour END) AS hours_high_cpu,
+  ROUND(AVG(hc.max_mem_pct), 1) AS avg_mem_pct_when_active,
+  ROUND(MAX(hc.max_mem_pct), 1) AS peak_mem_pct_when_active,
+  ROUND(COUNT(DISTINCT CASE WHEN hc.max_mem_pct >= 70 THEN uh.hour END) * 100.0 
+    / NULLIF(COUNT(DISTINCT uh.hour), 0), 1) AS pct_time_in_high_mem
+FROM user_hours uh
+JOIN health_checks hc ON uh.hour = hc.hour
+WHERE uh.user_id IS NOT NULL
+GROUP BY uh.user_id
+ORDER BY hours_high_mem DESC, peak_mem_pct_when_active DESC;
